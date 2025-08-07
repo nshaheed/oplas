@@ -31,6 +31,7 @@ class StemDataset(Dataset):
         load_frac   = 1.0, # fraction of dataset to load
         debug       = False, # print debug info
         ):
+        # breakpoint()
         search_dir = f'{data_dir}/{subset}'
         self.songs_listed = sorted(glob(f'{search_dir}/*.mp4'))
         print(f"{subset}: {len(self.songs_listed)} songs listed.  preload={preload}")
@@ -90,6 +91,7 @@ class StemDataset(Dataset):
         print(f"{self.subset}: Preloading songs...")
         self.songs = []
         max_ = max(1, int(len(self.songs_listed)*load_frac)) 
+        num_workers=1
         if num_workers > 1:  # parallel loading, fast but often hangs
             with mp.Pool(processes=num_workers) as p:  
                 with tqdm(total=max_) as pbar:
@@ -108,6 +110,7 @@ class StemDataset(Dataset):
 
     def __getitem__(self, idx, debug=False):
         """ Returns a random chunk of audio / grouped-stems from a random song"""
+        # breakpoint()
         idx = torch.randint(0, len(self.songs), (1,)).item()  # ignore the input idx, pick a random song
         data = self.song_data[idx] #self.songs[idx]['data']
         T = self.songs[idx]['length']  # the real length of the song
