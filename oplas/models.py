@@ -110,6 +110,7 @@ class Projector(nn.Module):
         y,  # the 'encodings' vector from the given encoder
     ):
         # breakpoint()
+        y = y.to(dtype=torch.float)
         z = self.encode(y)
         y_hat = self.decode(
             z

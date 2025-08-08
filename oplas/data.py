@@ -224,9 +224,12 @@ class EncodingsDataset(Dataset):
         ]  # TODO: this should really go the other way
 
     def __len__(self):
-        return (
-            len(self.songs) * 100000
-        )  # we're going to be grabbing random windows so...keep the party going
+        if self.subset == 'test': # don't want validation to go on forever
+            return (len(self.songs)*10)
+        else:
+            return (
+                len(self.songs) * 100000
+            )  # we're going to be grabbing random windows so...keep the party going
 
     def __getitem__(self, idx, debug=False):
         # ignore the input idx, pick a random song

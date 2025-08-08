@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from itertools import islice
 
 import wandb
 from oplas.data import StemDataset
@@ -19,6 +20,64 @@ def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
     dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
     save_path = dir / model_path.replace(".pt", f"{suffix}.pt")
     torch.save(model, save_path)
+
+def validate(projector, device, run, val_dl):
+    with torch.no_grad():
+        with tqdm(islice(val_dl, 0, 100), unit="batch", total=100) as vepoch:
+            vepoch.set_description("validating")
+            for batch in vepoch:  # validation steps
+                batch = batch.to(device)
+
+                mixes = mix_and_encode(batch, encoder)
+                y_mix = mixes["y_mix"]
+                # zs is a list of the encoded stems
+
+            zs = []
+            z_sum = None
+
+            # project y_mix?
+            z_mix_chunks = []
+            for i in range(y_mix.shape[-1]):
+                # need to process each latent value independently in the audio tracks
+                z_mix_chunk, y_hat_chunk = projector(y_mix[:, :, i])
+                z_mix_chunks.append(z_mix_chunk)
+
+            z_mix = torch.stack(z_mix_chunks, -1)
+
+            # go through each stem, project it, and then recombine the projection into z_sum
+            for y in mixes["ys"]:
+                z_chunks = []
+                for i in range(
+                        y.shape[-1]
+                ):  # need to take each latent chunk independently
+                    z_chunk, _ = projector(y[:, :, i])
+                    # breakpoint()
+                    z_chunks.append(z_chunk)
+
+                z = torch.stack(z_chunks, -1)
+                z_sum = z if z_sum is None else z + z_sum
+                zs.append(z)
+
+            mix_loss = mseloss(z_sum, z_mix)
+            vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
+
+            loss = (
+                mix_loss
+                + vicreg_loss["var_loss"]
+                + vicreg_loss["inv_loss"]
+                + vicreg_loss["cov_loss"]
+            )
+
+            vepoch.set_postfix(loss=loss.item(), mix_loss=mix_loss.item())
+            run.log(
+                {
+                    "val/loss": loss.detach(),
+                    "val/mix_loss": mix_loss.detach(),
+                    "val/var_loss": vicreg_loss["var_loss"].detach(),
+                    "val/inv_loss": vicreg_loss["inv_loss"].detach(),
+                    "val/cov_loss": vicreg_loss["cov_loss"].detach(),
+                }
+            )
 
 
 # TODO add train/test split and validation
@@ -66,6 +125,7 @@ projector = Projector(in_dims=64, out_dims=64).to(device)
 max_epochs = config["max_epochs"]
 lossinfo_every, viz_demo_every = 20, 1000  # in units of steps
 checkpoint_every = 10000
+val_every = 1000
 max_lr = 0.002
 batch_size = config["batch_size"]
 
@@ -164,67 +224,12 @@ with wandb.init(project=project, config=config) as run:
                         suffix=f"_{run.name}_{step}",
                     )
 
+                if step % val_every == 0 and step > 0:
+                    validate(projector, device, run, val_dl)
+
                 loss.backward()
                 opt.step()
                 step += 1
-
-            # validation
-            with torch.no_grad():
-                with tqdm(val_dl, unit="batch") as vepoch:
-                    vepoch.set_description("validating")
-                    for batch in vepoch:  # validation steps
-                        batch = batch.to(device)
-
-                        mixes = mix_and_encode(batch, encoder)
-                        y_mix = mixes["y_mix"]
-                        # zs is a list of the encoded stems
-
-                    zs = []
-                    z_sum = None
-
-                    # project y_mix?
-                    z_mix_chunks = []
-                    for i in range(y_mix.shape[-1]):
-                        # need to process each latent value independently in the audio tracks
-                        z_mix_chunk, y_hat_chunk = projector(y_mix[:, :, i])
-                        z_mix_chunks.append(z_mix_chunk)
-
-                    z_mix = torch.stack(z_mix_chunks, -1)
-
-                    # go through each stem, project it, and then recombine the projection into z_sum
-                    for y in mixes["ys"]:
-                        z_chunks = []
-                        for i in range(
-                            y.shape[-1]
-                        ):  # need to take each latent chunk independently
-                            z_chunk, _ = projector(y[:, :, i])
-                            # breakpoint()
-                            z_chunks.append(z_chunk)
-
-                        z = torch.stack(z_chunks, -1)
-                        z_sum = z if z_sum is None else z + z_sum
-                        zs.append(z)
-
-                    mix_loss = mseloss(z_sum, z_mix)
-                    vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-
-                    loss = (
-                        mix_loss
-                        + vicreg_loss["var_loss"]
-                        + vicreg_loss["inv_loss"]
-                        + vicreg_loss["cov_loss"]
-                    )
-
-                    tepoch.set_postfix(loss=loss.item(), mix_loss=mix_loss.item())
-                    run.log(
-                        {
-                            "val/loss": loss.detach(),
-                            "val/mix_loss": mix_loss.detach(),
-                            "val/var_loss": vicreg_loss["var_loss"].detach(),
-                            "val/inv_loss": vicreg_loss["inv_loss"].detach(),
-                            "val/cov_loss": vicreg_loss["cov_loss"].detach(),
-                        }
-                    )
 
     save_model(projector, save_dir="./checkpoints", suffix=f"_{run.name}_{step}")
 
