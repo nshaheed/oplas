@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import wandb
-from oplas.data import StemDataset
+from oplas.data import StemDataset2, StemDataset
 from oplas.losses import vicreg_loss_fn
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector, VGGishEncoder
@@ -72,8 +72,8 @@ batch_size = config["batch_size"]
 # loading the datasets
 load_frac = config["load_frac"]
 
-train_dataset = StemDataset(data_dir=args.data_dir, preload=True, load_frac=load_frac)
-val_dataset = StemDataset(
+train_dataset = StemDataset2(data_dir=args.data_dir, preload=True, load_frac=load_frac)
+val_dataset = StemDataset2(
     data_dir=args.data_dir, subset="test", preload=True, load_frac=load_frac
 )
 

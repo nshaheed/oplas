@@ -14,6 +14,105 @@ from tqdm import tqdm, trange
 # from tqdm.contrib.concurrent import process_map # doesn't work great w/ jupyter
 from tqdm.contrib.concurrent import process_map
 
+class StemDataset2(Dataset):
+    """This reads MUSDB18 stems files in .mp4 format. The contents of these are given in MUSDB18 docs:
+    0 - The mixture,    <--- note we're not going to use this
+    1 - The drums,
+    2 - The bass,
+    3 - The rest of the accompaniment,
+    4 - The vocals.
+    """
+    def __init__(
+        self,
+        subset="train",  # 'train' or 'test'
+        data_dir="/home/shawley/datasets/musdb18-stems",  # dir to look for songs
+        preload=False,  # load all audio files into memory at init. If False, load on demand
+        share_mem=False,  # share audio data memory between workers
+        chunk_size=2**18,  # size of audio chunks to return
+        sample_rate=44100,  # sample rate of audio
+        load_frac=1.0,  # fraction of dataset to load
+        debug=False,  # print debug info
+    ):
+        # breakpoint()
+        search_dir = f"{data_dir}/{subset}"
+        self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
+        print(f"{subset}: {len(self.songs_listed)} songs listed.  preload={preload}")
+        self.songs = [None] * len(self.songs_listed)  # actual song data loaded
+
+        # automatically adjust chunk_size to sample rate vs 44100
+        # if sample_rate != 44100:  chunk_size = int(chunk_size * sample_rate/44100)
+        if debug:
+            print("chunk_size = ", chunk_size)
+
+        self.subset, self.chunk_size, self.sample_rate, self.debug = (
+            subset,
+            chunk_size,
+            sample_rate,
+            debug,
+        )
+        self.share_mem = share_mem
+        self.load_count = 0
+        self.song_data = None  #  this will be a shared array to store (zero-padded) song audio, persistently shared between all workers
+
+
+    def load_song(self, idx, debug=False):
+        "loads one song file"
+        if type(idx) is int:
+            song_file = self.songs_listed[idx]
+        elif type(idx) is str:
+            song_file = idx
+        else:
+            print("Unsupported datatype = ", type(idx))
+        self.load_count += 1  # note this doesn't really work with parallel loading, i.e. when num_workers>0 :-(
+        if debug or self.debug:
+            print(f"{self.subset}: Loading {song_file}", flush=True)
+        data, sample_rate = stempeg.read_stems(song_file, sample_rate=self.sample_rate)
+        data = torch.tensor(data, dtype=torch.float32)
+        if debug:
+            print(
+                f"load_song {idx}: {self.songs_listed[idx]}: data.shape = ", data.shape
+            )
+        song_dict = {
+            "name": song_file,
+            "data": data,
+            "sample_rate": sample_rate,
+            "length": data.shape[1],
+        }
+        return song_dict
+
+    def __len__(self):
+        return (
+            len(self.songs) * 100000
+        )  # we're going to be grabbing random windows so...keep the party going
+
+    def __getitem__(self, idx, debug=False):
+        """Returns a random chunk of audio / grouped-stems from a random song"""
+        # breakpoint()
+        idx = torch.randint(
+            0, len(self.songs), (1,)
+        ).item()  # ignore the input idx, pick a random song
+        # data = self.song_data[idx]  # self.songs[idx]['data']
+        # breakpoint()
+        song = self.load_song(idx, debug)
+        data = song["data"]
+        # T = self.songs[idx]["length"]  # the real length of the song
+        T = song["length"]
+        if T < self.chunk_size:
+            # we're about to get an error if this is ever true. don't pad with zeros just let it fail
+            if debug:
+                print(
+                    f"\n__getitem__: songs[{idx}] = ({self.songs_listed[idx]}),  data.shape ={data.shape}, chunk_size = {self.chunk_size}",
+                    flush=True,
+                )
+        start = torch.randint(0, T - self.chunk_size, (1,))
+        end = start + self.chunk_size
+        out = data[:, start:end, :]
+        if debug:
+            print("\n__getitem__: out.shape = ", out.shape)
+        return out.to(torch.float32)  # .to just to make sure...    
+        
+
+    
 
 class StemDataset(Dataset):
     """This reads MUSDB18 stems files in .mp4 format. The contents of these are given in MUSDB18 docs:
@@ -137,7 +236,6 @@ class StemDataset(Dataset):
 
     def __getitem__(self, idx, debug=False):
         """Returns a random chunk of audio / grouped-stems from a random song"""
-        # breakpoint()
         idx = torch.randint(
             0, len(self.songs), (1,)
         ).item()  # ignore the input idx, pick a random song
