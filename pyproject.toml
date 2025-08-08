@@ -25,6 +25,8 @@ dependencies = [
   "matplotlib",
   "setuptools>=75.3.2",
   "torchdata>=0.8.0",
+  "music2latent>=0.1.6",
+  "vicregaddon>=0.0.4",
 ]
 
 [build-system]
@@ -47,4 +49,9 @@ torchaudio = [
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.8",
+]
 

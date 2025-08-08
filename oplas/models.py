@@ -1,10 +1,11 @@
 import torch 
 import torch.nn as nn
 import os 
-import laion_clap
+# import laion_clap
 import numpy as np 
 import torchaudio
 from torchaudio.prototype.pipelines import VGGISH
+from music2latent import EncoderDecoder
 
 #------ first, our Projector model that is made of a bunch of EmbedBlocks -------
 
@@ -73,6 +74,7 @@ class Projector(nn.Module):
     def forward(self, 
         y   # the 'encodings' vector from the given encoder
         ):
+        # breakpoint()
         z = self.encode(y)
         y_hat = self.decode(z)  # train projector to approximately invert itself (and hope it doesn't all collapse to nothing!)
         return z, y_hat  # encoder output,  decoder output
@@ -81,25 +83,26 @@ class Projector(nn.Module):
 # -- Now a list of "given models" i.e. pretrained encoders (CLAP, Vggish, etc)
 
 
-class CLAPEncoder(nn.Module):
-    def __init__(self, enable_fusion=True, **kwargs):
-        super().__init__()
-        self.model = laion_clap.CLAP_Module(enable_fusion=enable_fusion, **kwargs)
-        self.model.load_ckpt()
-        self.model.eval()
-        self.sample_rate = 48000
+# class CLAPEncoder(nn.Module):
+#     def __init__(self, enable_fusion=True, **kwargs):
+#         super().__init__()
+#         self.model = laion_clap.CLAP_Module(enable_fusion=enable_fusion, **kwargs)
+#         self.model.load_ckpt()
+#         self.model.eval()
+#         self.sample_rate = 48000
 
-    @torch.no_grad()
-    def encode(self, audio):
-        while len(audio.shape) < 3: 
-            audio = audio.unsqueeze(0) # add batch and/or channel dims 
-        if audio.shape[-1]==2:         # stereo to mono: average TODO: make this more robust
-            audio = audio.mean(dim=-1)
-        encodings = self.model.get_audio_embedding_from_data(x=audio, use_tensor=True).to(audio.dtype)
-        return encodings
+#     @torch.no_grad()
+#     def encode(self, audio):
+#         breakpoint()
+#         while len(audio.shape) < 3: 
+#             audio = audio.unsqueeze(0) # add batch and/or channel dims 
+#         if audio.shape[-1]==2:         # stereo to mono: average TODO: make this more robust
+#             audio = audio.mean(dim=-1)
+#         encodings = self.model.get_audio_embedding_from_data(x=audio, use_tensor=True).to(audio.dtype)
+#         return encodings
 
-    def forward(self, audio):
-        return self.encode(audio)
+#     def forward(self, audio):
+#         return self.encode(audio)
 
 
 # class VGGishEncoder_Old(nn.Module):
@@ -164,6 +167,7 @@ class VGGishEncoder(nn.Module):
         audio = torch.mean(audio, dim=-1)   # vggish requries we convert to mono
         #encodings = self.encoder(self.input_proc(audio))  # fully batched version. WON'T WORK
         # VGGish pipeline can't handle batches so we need to send them one at a time....
+        # breakpoint()
         encodings = torch.empty(audio.shape[0], 128, device=audio.device, dtype=audio.dtype)
         for bi, waveform in enumerate(audio): 
             if debug: print("   waveform.shape =",waveform.shape) 
@@ -178,3 +182,25 @@ class VGGishEncoder(nn.Module):
 
     def forward(self, audio):
         return self.encode(audio)
+
+class Music2Latent(nn.Module):
+    """
+    https://github.com/SonyCSLParis/music2latent
+    """
+    def __init__(self):
+        super().__init__()
+        # self.sample_rate =
+        self.encoder = EncoderDecoder()
+
+    @torch.no_grad()
+    def encode(self, audio):
+        # m2l needs mono audio (I think)
+        audio = torch.mean(audio, dim=-1)
+        encodings = self.encoder.encode(audio)
+
+        return encodings
+
+    def forward(self, audio):
+        return self.encode(audio)
+
+    
