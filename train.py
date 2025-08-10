@@ -22,7 +22,7 @@ def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
     torch.save(model, save_path)
 
 @torch.no_grad()
-def validate(projector, device, run, val_dl, model):
+def validate(projector, device, val_dl, model):
     vbatch = tqdm(islice(val_dl, 0, 50), unit="batch", total=50)
     for step, batch in enumerate(vbatch):
         vbatch.set_description("validating")
@@ -69,33 +69,34 @@ def validate(projector, device, run, val_dl, model):
             + vicreg_loss["cov_loss"]
         )
 
+        log = {}
+
         # generate some media
         if step == 0:
             latent = projector.decode(z_sum.permute(0,2,1)) # swap last two dims
             latent = latent.permute(0,2,1) # have to swap it back
             # latent = latent.view(latent.shape[0], -1)
             audio = model.decode(latent).cpu()
-            run.log({
+            log = log | {
                 "val/z_mix0": wandb.Audio(audio[0], caption="decoding of audio mixed in the z domain", sample_rate=44100),
                 "val/orig0": wandb.Audio(batch[0,0,:,0].cpu(), caption="original mix", sample_rate=44100),
                 "val/z_mix1": wandb.Audio(audio[1], caption="decoding of audio mixed in the z domain", sample_rate=44100),
                 "val/orig1": wandb.Audio(batch[1,0,:,0].cpu(), caption="original mix", sample_rate=44100),
                 "val/z_mix2": wandb.Audio(audio[2], caption="decoding of audio mixed in the z domain", sample_rate=44100),
                 "val/orig2": wandb.Audio(batch[2,0,:,0].cpu(), caption="original mix", sample_rate=44100)
-                })
+                }
 
 
 
         vbatch.set_postfix(loss=loss.item(), mix_loss=mix_loss.item())
-        run.log(
-            {
+        log = log | {
                 "val/loss": loss.detach(),
                 "val/mix_loss": mix_loss.detach(),
                 "val/var_loss": vicreg_loss["var_loss"].detach(),
                 "val/inv_loss": vicreg_loss["inv_loss"].detach(),
                 "val/cov_loss": vicreg_loss["cov_loss"].detach(),
             }
-        )
+        return log
 
 
 # TODO add train/test split and validation
@@ -235,15 +236,13 @@ with wandb.init(project=project, config=config) as run:
             + vicreg_loss["cov_loss"]
         )
         tbatch.set_postfix(loss=loss.item(), mix_loss=mix_loss.item())
-        run.log(
-            {
+        log = {
                 "train/loss": loss.detach(),
                 "train/mix_loss": mix_loss.detach(),
                 "train/var_loss": vicreg_loss["var_loss"].detach(),
                 "train/inv_loss": vicreg_loss["inv_loss"].detach(),
                 "train/cov_loss": vicreg_loss["cov_loss"].detach(),
             }
-        )
 
         if step % checkpoint_every == 0:
             save_model(
@@ -253,8 +252,9 @@ with wandb.init(project=project, config=config) as run:
             )
 
         if step % val_every == 0:
-            validate(projector, device, run, val_dl, encoder)
+            log = log | validate(projector, device, val_dl, encoder)
 
+        run.log(log)
         loss.backward()
         opt.step()
         step += 1
