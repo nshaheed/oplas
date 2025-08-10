@@ -21,6 +21,124 @@ import random
 import stempeg
 import os
 
+class StemChunk(IterableDataset):
+    """
+    Infinite stream of random audio chunks from MUSDB18 stems using preloading.
+
+    This reads MUSDB18 stems files in .mp4 format. The contents of these are given in MUSDB18 docs:
+    0 - The mixture,    <--- note we're not going to use this
+    1 - The drums,
+    2 - The bass,
+    3 - The rest of the accompaniment,
+    4 - The vocals.
+    """
+
+    def __init__(
+        self,
+        subset="train",
+        data_dir="/home/shawley/datasets/musdb18-stems",
+        chunk_size=2**18,       # number of samples per chunk
+        sample_rate=44100,
+        load_frac=1.0,          # fraction of dataset to use
+        debug=False
+    ):
+        search_dir = os.path.join(data_dir, subset)
+        self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
+        if load_frac < 1.0:
+            keep_n = max(1, int(len(self.songs_listed) * load_frac))
+            self.songs_listed = random.sample(self.songs_listed, keep_n)
+
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+        self.debug = debug
+        self.subset = subset
+
+        # Precompute song lengths in samples
+        self.song_lengths = []
+        for song_path in self.songs_listed:
+            info = stempeg.Info(song_path)
+            duration_sec = info.duration(0)
+            num_samples = int(duration_sec * info.sample_rate(0))
+            self.song_lengths.append(num_samples)
+
+        if debug:
+            print(f"{subset}: {len(self.songs_listed)} songs listed.")
+            print(f"Chunk size: {chunk_size} samples ({chunk_size / sample_rate:.2f} sec)")
+            print(f"{len(self.songs_listed)=}")
+
+        self.preload(load_frac, debug)
+
+    def preload(self, load_frac=1.0, debug=False):
+        print(f"{self.subset}: Preloading songs...")
+        self.songs = []
+
+        for i, song_name in tqdm(enumerate(self.songs_listed), desc="loading audio"):
+            self.songs.append(self.load_song(i))
+
+
+    def load_song(self, idx, start=0, duration=None, debug=False):
+        "loads one song file"
+        if type(idx) is int:
+            song_file = self.songs_listed[idx]
+        elif type(idx) is str:
+            song_file = idx
+        else:
+            print("Unsupported datatype = ", type(idx))
+
+        if debug or self.debug:
+            print(f"{self.subset}: Loading {song_file}", flush=True)
+
+        data, sample_rate = stempeg.read_stems(song_file, sample_rate=self.sample_rate, start=start, duration=duration)
+        data = torch.tensor(data, dtype=torch.float32)
+        if debug:
+            print(
+                f"load_song {idx}: {self.songs_listed[idx]}: data.shape = ", data.shape
+            )
+        song_dict = {
+            "name": song_file,
+            "data": data,
+            "sample_rate": sample_rate,
+            "length": data.shape[1],
+        }
+        return song_dict
+
+    def __iter__(self):
+        if self.debug is True:
+            print(f'{len(self.songs_listed)=}')
+
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            # Single-process data loading
+            seed = random.randint(0, 2**32 - 1)
+        else:
+            # Unique seed per worker
+            seed = worker_info.seed
+
+        rng = random.Random(seed)
+
+        while True:
+            # Pick a random song
+            song_idx = rng.randint(0, len(self.songs_listed) - 1)
+            song = self.songs[song_idx]
+            # song_path = self.songs_listed[song_idx]
+            # song_len = self.song_lengths[song_idx]
+
+            data = song["data"]
+            T = song["length"]
+            if T < self.chunk_size:
+                # we're about to get an error if this is ever true. don't pad with zeros just let it fail
+                if debug:
+                    print(
+                        f"\n__getitem__: songs[{idx}] = ({self.songs_listed[idx]}),  data.shape ={data.shape}, chunk_size = {self.chunk_size}",
+                        flush=True,
+                    )
+            start = torch.randint(0, T - self.chunk_size, (1,))
+            end = start + self.chunk_size
+            out = data[:, start:end, :]
+            if self.debug:
+                print("\n__getitem__: out.shape = ", out.shape)
+            yield out
+
 
 class StemChunkStream(IterableDataset):
     """
@@ -204,10 +322,10 @@ class StemDataset2(Dataset):
         out = data[:, start:end, :]
         if debug:
             print("\n__getitem__: out.shape = ", out.shape)
-        return out.to(torch.float32)  # .to just to make sure...    
-        
+        return out.to(torch.float32)  # .to just to make sure...
 
-    
+
+
 
 class StemDataset(Dataset):
     """This reads MUSDB18 stems files in .mp4 format. The contents of these are given in MUSDB18 docs:
@@ -447,7 +565,7 @@ def build_vggish_stemlike(data_dir="/data/05-03_VGGish_1min_Encodings"):
         assert os.path.isdir(f"{data_dir}/{in_s}"), f"{data_dir}/{in_s} does not exist"
     out_subsets = ["train", "test"]
     """
-        0 - The mixture,    
+        0 - The mixture,
         1 - The drums,
         2 - The bass,
         3 - The rest of the accompaniment,
