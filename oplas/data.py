@@ -14,6 +14,100 @@ from tqdm import tqdm, trange
 # from tqdm.contrib.concurrent import process_map # doesn't work great w/ jupyter
 from tqdm.contrib.concurrent import process_map
 
+import torch
+from torch.utils.data import IterableDataset
+from glob import glob
+import random
+import stempeg
+import os
+
+
+class StemChunkStream(IterableDataset):
+    """
+    Infinite stream of random audio chunks from MUSDB18 stems using on-demand loading.
+
+    Each sample is read directly from disk with `start` and `duration` to avoid loading
+    full songs into memory.
+    """
+
+    def __init__(
+        self,
+        subset="train",
+        data_dir="/home/shawley/datasets/musdb18-stems",
+        chunk_size=2**18,       # number of samples per chunk
+        sample_rate=44100,
+        load_frac=1.0,          # fraction of dataset to use
+        debug=False
+    ):
+        if debug:
+            breakpoint()
+        search_dir = os.path.join(data_dir, subset)
+        self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
+        if load_frac < 1.0:
+            keep_n = int(len(self.songs_listed) * load_frac)
+            self.songs_listed = random.sample(self.songs_listed, keep_n)
+
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+        self.debug = debug
+
+        # Precompute song lengths in samples
+        self.song_lengths = []
+        for song_path in self.songs_listed:
+            info = stempeg.Info(song_path)
+            duration_sec = info.duration(0) # dot notation, not ['duration']
+            num_samples = int(duration_sec * info.sample_rate(0))
+            self.song_lengths.append(num_samples)
+
+        if debug:
+            print(f"{subset}: {len(self.songs_listed)} songs listed.")
+            print(f"Chunk size: {chunk_size} samples ({chunk_size / sample_rate:.2f} sec)")
+            print(f"{len(self.songs_listed)=}")
+
+    def __iter__(self):
+        if self.debug is True:
+            print(f'{len(self.songs_listed)=}')
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            # Single-process data loading
+            seed = random.randint(0, 2**32 - 1)
+        else:
+            # Unique seed per worker
+            seed = worker_info.seed
+
+        rng = random.Random(seed)
+
+        while True:  # Infinite stream
+            # Pick a random song
+            song_idx = rng.randint(0, len(self.songs_listed) - 1)
+            song_path = self.songs_listed[song_idx]
+            song_len = self.song_lengths[song_idx]
+
+            if song_len <= self.chunk_size:
+                continue  # skip too-short songs
+
+            # Pick a random start position in seconds
+            start_sample = rng.randint(0, song_len - self.chunk_size)
+            start_sec = start_sample / self.sample_rate
+            duration_sec = self.chunk_size / self.sample_rate
+
+            # Load only the requested chunk
+            data, _ = stempeg.read_stems(
+                song_path,
+                start=start_sec,
+                duration=duration_sec,
+                sample_rate=self.sample_rate
+            )
+
+            # Convert to torch tensor
+            data = torch.tensor(data, dtype=torch.float32)
+
+            if self.debug:
+                print(f"Loaded {song_path} [{start_sec:.2f}s -> {start_sec+duration_sec:.2f}s], shape={data.shape}")
+
+            yield data
+
+
 class StemDataset2(Dataset):
     """This reads MUSDB18 stems files in .mp4 format. The contents of these are given in MUSDB18 docs:
     0 - The mixture,    <--- note we're not going to use this
@@ -38,6 +132,7 @@ class StemDataset2(Dataset):
         self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
         print(f"{subset}: {len(self.songs_listed)} songs listed.  preload={preload}")
         self.songs = [None] * len(self.songs_listed)  # actual song data loaded
+        self.songs_len = [None] * len(self.songs_listed)
 
         # automatically adjust chunk_size to sample rate vs 44100
         # if sample_rate != 44100:  chunk_size = int(chunk_size * sample_rate/44100)
@@ -55,7 +150,7 @@ class StemDataset2(Dataset):
         self.song_data = None  #  this will be a shared array to store (zero-padded) song audio, persistently shared between all workers
 
 
-    def load_song(self, idx, debug=False):
+    def load_song(self, idx, start=0, duration=None, debug=False):
         "loads one song file"
         if type(idx) is int:
             song_file = self.songs_listed[idx]
@@ -66,7 +161,7 @@ class StemDataset2(Dataset):
         self.load_count += 1  # note this doesn't really work with parallel loading, i.e. when num_workers>0 :-(
         if debug or self.debug:
             print(f"{self.subset}: Loading {song_file}", flush=True)
-        data, sample_rate = stempeg.read_stems(song_file, sample_rate=self.sample_rate)
+        data, sample_rate = stempeg.read_stems(song_file, sample_rate=self.sample_rate, start=start, duration=duration)
         data = torch.tensor(data, dtype=torch.float32)
         if debug:
             print(
@@ -234,7 +329,7 @@ class StemDataset(Dataset):
             len(self.songs) * 100000
         )  # we're going to be grabbing random windows so...keep the party going
 
-    def __getitem__(self, idx, debug=False):
+    def __getitem__(self, idx, debug=True):
         """Returns a random chunk of audio / grouped-stems from a random song"""
         idx = torch.randint(
             0, len(self.songs), (1,)
