@@ -9,7 +9,7 @@ from tqdm import tqdm
 from itertools import islice
 
 import wandb
-from oplas.data import StemDataset2, StemDataset, StemChunkStream
+from oplas.data import StemDataset2, StemDataset, StemChunkStream, StemChunk
 from oplas.losses import vicreg_loss_fn
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector, VGGishEncoder
@@ -23,7 +23,7 @@ def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
 
 @torch.no_grad()
 def validate(projector, device, run, val_dl, model):
-    vbatch = tqdm(islice(val_dl, 0, 50), unit="batch", total=100)
+    vbatch = tqdm(islice(val_dl, 0, 50), unit="batch", total=50)
     for step, batch in enumerate(vbatch):
         vbatch.set_description("validating")
 
@@ -150,13 +150,18 @@ dataset_size = 100
 # loading the datasets
 load_frac = config["load_frac"]
 
-train_dataset = StemChunkStream(data_dir=args.data_dir, load_frac=load_frac, debug=False)
-val_dataset = StemChunkStream(
+# train_dataset = StemChunkStream(data_dir=args.data_dir, load_frac=load_frac, debug=False)
+# val_dataset = StemChunkStream(
+#     data_dir=args.data_dir, subset="test", load_frac=load_frac*2
+# )
+
+train_dataset = StemChunk(data_dir=args.data_dir, load_frac=load_frac, debug=False)
+val_dataset = StemChunk(
     data_dir=args.data_dir, subset="test", load_frac=load_frac*2
 )
 
-train_dl = DataLoader(train_dataset, batch_size=batch_size, num_workers=8)
-val_dl = DataLoader(val_dataset, batch_size=batch_size, num_workers=8)
+train_dl = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
+val_dl = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
 
 max_steps = 100000
 
@@ -176,8 +181,9 @@ encoder = Music2Latent()
 
 # training loop
 with wandb.init(project=project, config=config) as run:
+    print(f'starting run {run.name}...')
     epoch, step = 0, 0
-    tbatch = tqdm(train_dl, total=max_steps, unit="batch")
+    tbatch = tqdm(train_dl, total=max_steps, unit="batch", desc='training')
     for step, batch in enumerate(tbatch):
         # breakpoint()
         if step >= max_steps:
@@ -186,7 +192,6 @@ with wandb.init(project=project, config=config) as run:
         batch = batch.to(device)
         opt.zero_grad()
         log_dict = {}
-        tbatch.set_description('training')
 
         with torch.no_grad():  # encoder is frozen
             # mix = mix_stems(batch, static_mix=False)
