@@ -238,15 +238,19 @@ class Music2Latent(nn.Module):
     def __init__(self):
         super().__init__()
         # self.sample_rate =
-        self.encoder = EncoderDecoder()
+        self.encdec = EncoderDecoder()
 
     @torch.no_grad()
     def encode(self, audio):
         # m2l needs mono audio (I think)
         audio = torch.mean(audio, dim=-1)
-        encodings = self.encoder.encode(audio)
+        encodings = self.encdec.encode(audio)
 
         return encodings
+
+    @torch.no_grad()
+    def decode(self, latent):
+        return self.encdec.decode(latent)
 
     def forward(self, audio):
         return self.encode(audio)
