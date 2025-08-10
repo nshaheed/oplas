@@ -23,10 +23,8 @@ def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
 
 @torch.no_grad()
 def validate(projector, device, val_dl, model):
-    vbatch = tqdm(islice(val_dl, 0, 50), unit="batch", total=50)
+    vbatch = islice(val_dl, 0, 1)
     for step, batch in enumerate(vbatch):
-        vbatch.set_description("validating")
-
         batch = batch.to(device)
 
         mixes = mix_and_encode(batch, encoder)
@@ -71,24 +69,20 @@ def validate(projector, device, val_dl, model):
 
         log = {}
 
-        # generate some media
-        if step == 0:
-            latent = projector.decode(z_sum.permute(0,2,1)) # swap last two dims
-            latent = latent.permute(0,2,1) # have to swap it back
-            # latent = latent.view(latent.shape[0], -1)
-            audio = model.decode(latent).cpu()
-            log = log | {
-                "val/z_mix0": wandb.Audio(audio[0], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-                "val/orig0": wandb.Audio(batch[0,0,:,0].cpu(), caption="original mix", sample_rate=44100),
-                "val/z_mix1": wandb.Audio(audio[1], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-                "val/orig1": wandb.Audio(batch[1,0,:,0].cpu(), caption="original mix", sample_rate=44100),
-                "val/z_mix2": wandb.Audio(audio[2], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-                "val/orig2": wandb.Audio(batch[2,0,:,0].cpu(), caption="original mix", sample_rate=44100)
-                }
 
+        latent = projector.decode(z_sum.permute(0,2,1)) # swap last two dims
+        latent = latent.permute(0,2,1) # have to swap it back
+        # latent = latent.view(latent.shape[0], -1)
+        audio = model.decode(latent).cpu()
+        log = log | {
+            "val/z_mix0": wandb.Audio(audio[0], caption="decoding of audio mixed in the z domain", sample_rate=44100),
+            "val/orig0": wandb.Audio(batch[0,0,:,0].cpu(), caption="original mix", sample_rate=44100),
+            "val/z_mix1": wandb.Audio(audio[1], caption="decoding of audio mixed in the z domain", sample_rate=44100),
+            "val/orig1": wandb.Audio(batch[1,0,:,0].cpu(), caption="original mix", sample_rate=44100),
+            "val/z_mix2": wandb.Audio(audio[2], caption="decoding of audio mixed in the z domain", sample_rate=44100),
+            "val/orig2": wandb.Audio(batch[2,0,:,0].cpu(), caption="original mix", sample_rate=44100)
+        }
 
-
-        vbatch.set_postfix(loss=loss.item(), mix_loss=mix_loss.item())
         log = log | {
                 "val/loss": loss.detach(),
                 "val/mix_loss": mix_loss.detach(),
