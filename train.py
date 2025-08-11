@@ -75,12 +75,12 @@ def validate(projector, device, val_dl, model):
         # latent = latent.view(latent.shape[0], -1)
         audio = model.decode(latent).cpu()
         log = log | {
-            "val/z_mix0": wandb.Audio(audio[0], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-            "val/orig0": wandb.Audio(batch[0,0,:,0].cpu(), caption="original mix", sample_rate=44100),
-            "val/z_mix1": wandb.Audio(audio[1], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-            "val/orig1": wandb.Audio(batch[1,0,:,0].cpu(), caption="original mix", sample_rate=44100),
-            "val/z_mix2": wandb.Audio(audio[2], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-            "val/orig2": wandb.Audio(batch[2,0,:,0].cpu(), caption="original mix", sample_rate=44100)
+            "val/0/z_mix": wandb.Audio(audio[0], caption="decoding of audio mixed in the z domain", sample_rate=44100),
+            "val/0/orig": wandb.Audio(batch[0,0,:,0].cpu(), caption="original mix", sample_rate=44100),
+            "val/1/z_mix": wandb.Audio(audio[1], caption="decoding of audio mixed in the z domain", sample_rate=44100),
+            "val/1/orig": wandb.Audio(batch[1,0,:,0].cpu(), caption="original mix", sample_rate=44100),
+            "val/2/z_mix": wandb.Audio(audio[2], caption="decoding of audio mixed in the z domain", sample_rate=44100),
+            "val/2/orig": wandb.Audio(batch[2,0,:,0].cpu(), caption="original mix", sample_rate=44100)
         }
 
         log = log | {
@@ -134,14 +134,13 @@ config = {
     "max_epochs": 40,
     "max_lr": 0.002,
     "test": args.test,
-    "batch_size": 10 if args.test else 300,
+    "batch_size": 10 if args.test else 32,
     "load_frac": 0.01 if args.test else 1.0,
 }
 
 projector = Projector(in_dims=64, out_dims=64).to(device)
 
 max_epochs = config["max_epochs"]
-lossinfo_every, viz_demo_every = 20, 1000  # in units of steps
 checkpoint_every = 200
 val_every = 100
 max_lr = 0.002
@@ -164,7 +163,7 @@ val_dataset = StemChunk(
 train_dl = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
 
-max_steps = 100000
+max_steps = 10000
 
 # optimizer and learning rate scheduler
 opt = torch.optim.Adam([*projector.parameters()], lr=5e-4)
