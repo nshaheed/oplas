@@ -14,7 +14,7 @@ from oplas.losses import vicreg_loss_fn
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector, VGGishEncoder
 
-n
+
 def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
     dir = Path(save_dir)
     dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
@@ -36,35 +36,48 @@ def validate(projector, device, val_dl, model):
 
         # project y_mix?
         z_mix_chunks = []
+        y_hat_mix_chunks = []
         for i in range(y_mix.shape[-1]):
             # need to process each latent value independently in the audio tracks
             z_mix_chunk, y_hat_chunk = projector(y_mix[:, :, i])
             z_mix_chunks.append(z_mix_chunk)
+            y_hat_mix_chunks.append(y_hat_mix_chunk)
 
         z_mix = torch.stack(z_mix_chunks, -1)
+        y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
 
         # go through each stem, project it, and then recombine the projection into z_sum
-        for y in mixes["ys"]:
+        ys = mixes["ys"]
+        y_hats = []
+
+        for y in ys:
             z_chunks = []
+            y_hat_chunks = []
             for i in range(
                     y.shape[-1]
             ):  # need to take each latent chunk independently
-                z_chunk, _ = projector(y[:, :, i])
-                # breakpoint()
+                z_chunk, y_hat_chunk = projector(y[:, :, i])
                 z_chunks.append(z_chunk)
+                y_hat_chunks.append(y_hat_chunk)
 
             z = torch.stack(z_chunks, -1)
             z_sum = z if z_sum is None else z + z_sum
             zs.append(z)
+            y_hat = torch.stack(y_hat_chunks, -1)
+            y_hats.append(y_hat)
 
-        mix_loss = mseloss(z_sum, z_mix)
+
+        # calculate loss
+        y_hats = torch.stack(y_hats, 1)
+        ys = torch.stack(ys, 1)
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
+        recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)        
 
         loss = (
-            mix_loss
-            + vicreg_loss["var_loss"]
+            vicreg_loss["var_loss"]
             + vicreg_loss["inv_loss"]
             + vicreg_loss["cov_loss"]
+            + recon_loss
         )
 
         log = {}
@@ -85,10 +98,10 @@ def validate(projector, device, val_dl, model):
 
         log = log | {
                 "val/loss": loss.detach(),
-                "val/mix_loss": mix_loss.detach(),
                 "val/var_loss": vicreg_loss["var_loss"].detach(),
                 "val/inv_loss": vicreg_loss["inv_loss"].detach(),
                 "val/cov_loss": vicreg_loss["cov_loss"].detach(),
+                "val/recon_loss": recon_loss.detach(),                
             }
         return log
 
@@ -202,45 +215,61 @@ with wandb.init(project=project, config=config) as run:
         zs = []
         z_sum = None
 
-        # project y_mix?
+        # given a y_mix, this should project into z space, and then back into y space
+        # as one audio track
+        # TODO use torch.permute() to replace the for loop
         z_mix_chunks = []
+        y_hat_mix_chunks = []
         for i in range(y_mix.shape[-1]):
             # need to process each latent value independently in the audio tracks
-            z_mix_chunk, y_hat_chunk = projector(y_mix[:, :, i])
+            z_mix_chunk, y_hat_mix_chunk = projector(y_mix[:, :, i])
             z_mix_chunks.append(z_mix_chunk)
+            y_hat_mix_chunks.append(y_hat_mix_chunk)
 
+        # why is this stack here? because need to combine chunking back into it
         z_mix = torch.stack(z_mix_chunks, -1)
+        y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
 
         # go through each stem, project it, and then recombine the projection into z_sum
-        for y in mixes["ys"]:
+        ys = mixes["ys"]
+        y_hats = []
+        
+        for y in ys:
             z_chunks = []
+            y_hat_chunks = []
             for i in range(
                 y.shape[-1]
             ):  # need to take each latent chunk independently
-                z_chunk, _ = projector(y[:, :, i])
-                # breakpoint()
+                z_chunk, y_hat_chunk = projector(y[:, :, i])
                 z_chunks.append(z_chunk)
+                y_hat_chunks.append(y_hat_chunk)
 
             z = torch.stack(z_chunks, -1)
             z_sum = z if z_sum is None else z + z_sum
             zs.append(z)
+            y_hat = torch.stack(y_hat_chunks, -1)
+            y_hats.append(y_hat)
 
-        mix_loss = mseloss(z_sum, z_mix)
+        # calculate loss
+        y_hats = torch.stack(y_hats, 1)
+        ys = torch.stack(ys, 1)
+        # mix_loss = mseloss(z_sum, z_mix)
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
+        recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
         loss = (
-            mix_loss
-            + vicreg_loss["var_loss"]
+            vicreg_loss["var_loss"]
             + vicreg_loss["inv_loss"]
             + vicreg_loss["cov_loss"]
+            + recon_loss
         )
-        tbatch.set_postfix(loss=loss.item(), mix_loss=mix_loss.item())
+        tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["var_loss"].item())
         log = {
                 "train/loss": loss.detach(),
-                "train/mix_loss": mix_loss.detach(),
                 "train/var_loss": vicreg_loss["var_loss"].detach(),
                 "train/inv_loss": vicreg_loss["inv_loss"].detach(),
                 "train/cov_loss": vicreg_loss["cov_loss"].detach(),
+                "train/recon_loss": recon_loss.detach(),
             }
 
         if step % checkpoint_every == 0:
