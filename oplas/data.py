@@ -1,6 +1,7 @@
 import ctypes
 import multiprocessing as mp
 import os
+import random
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from glob import glob
@@ -8,18 +9,12 @@ from glob import glob
 import numpy as np
 import stempeg
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm, trange
 
 # from tqdm.contrib.concurrent import process_map # doesn't work great w/ jupyter
 from tqdm.contrib.concurrent import process_map
 
-import torch
-from torch.utils.data import IterableDataset
-from glob import glob
-import random
-import stempeg
-import os
 
 class StemChunk(IterableDataset):
     """
@@ -37,10 +32,10 @@ class StemChunk(IterableDataset):
         self,
         subset="train",
         data_dir="/home/shawley/datasets/musdb18-stems",
-        chunk_size=2**18,       # number of samples per chunk
+        chunk_size=2**18,  # number of samples per chunk
         sample_rate=44100,
-        load_frac=1.0,          # fraction of dataset to use
-        debug=False
+        load_frac=1.0,  # fraction of dataset to use
+        debug=False,
     ):
         search_dir = os.path.join(data_dir, subset)
         self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
@@ -63,7 +58,9 @@ class StemChunk(IterableDataset):
 
         if debug:
             print(f"{subset}: {len(self.songs_listed)} songs listed.")
-            print(f"Chunk size: {chunk_size} samples ({chunk_size / sample_rate:.2f} sec)")
+            print(
+                f"Chunk size: {chunk_size} samples ({chunk_size / sample_rate:.2f} sec)"
+            )
             print(f"{len(self.songs_listed)=}")
 
         self.preload(load_frac, debug)
@@ -74,7 +71,6 @@ class StemChunk(IterableDataset):
 
         for i, song_name in tqdm(enumerate(self.songs_listed), desc="loading audio"):
             self.songs.append(self.load_song(i))
-
 
     def load_song(self, idx, start=0, duration=None, debug=False):
         "loads one song file"
@@ -88,7 +84,9 @@ class StemChunk(IterableDataset):
         if debug or self.debug:
             print(f"{self.subset}: Loading {song_file}", flush=True)
 
-        data, sample_rate = stempeg.read_stems(song_file, sample_rate=self.sample_rate, start=start, duration=duration)
+        data, sample_rate = stempeg.read_stems(
+            song_file, sample_rate=self.sample_rate, start=start, duration=duration
+        )
         data = torch.tensor(data, dtype=torch.float32)
         if debug:
             print(
@@ -104,7 +102,7 @@ class StemChunk(IterableDataset):
 
     def __iter__(self):
         if self.debug is True:
-            print(f'{len(self.songs_listed)=}')
+            print(f"{len(self.songs_listed)=}")
 
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
@@ -152,10 +150,10 @@ class StemChunkStream(IterableDataset):
         self,
         subset="train",
         data_dir="/home/shawley/datasets/musdb18-stems",
-        chunk_size=2**18,       # number of samples per chunk
+        chunk_size=2**18,  # number of samples per chunk
         sample_rate=44100,
-        load_frac=1.0,          # fraction of dataset to use
-        debug=False
+        load_frac=1.0,  # fraction of dataset to use
+        debug=False,
     ):
         if debug:
             breakpoint()
@@ -173,18 +171,20 @@ class StemChunkStream(IterableDataset):
         self.song_lengths = []
         for song_path in self.songs_listed:
             info = stempeg.Info(song_path)
-            duration_sec = info.duration(0) # dot notation, not ['duration']
+            duration_sec = info.duration(0)  # dot notation, not ['duration']
             num_samples = int(duration_sec * info.sample_rate(0))
             self.song_lengths.append(num_samples)
 
         if debug:
             print(f"{subset}: {len(self.songs_listed)} songs listed.")
-            print(f"Chunk size: {chunk_size} samples ({chunk_size / sample_rate:.2f} sec)")
+            print(
+                f"Chunk size: {chunk_size} samples ({chunk_size / sample_rate:.2f} sec)"
+            )
             print(f"{len(self.songs_listed)=}")
 
     def __iter__(self):
         if self.debug is True:
-            print(f'{len(self.songs_listed)=}')
+            print(f"{len(self.songs_listed)=}")
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
             # Single-process data loading
@@ -214,14 +214,16 @@ class StemChunkStream(IterableDataset):
                 song_path,
                 start=start_sec,
                 duration=duration_sec,
-                sample_rate=self.sample_rate
+                sample_rate=self.sample_rate,
             )
 
             # Convert to torch tensor
             data = torch.tensor(data, dtype=torch.float32)
 
             if self.debug:
-                print(f"Loaded {song_path} [{start_sec:.2f}s -> {start_sec+duration_sec:.2f}s], shape={data.shape}")
+                print(
+                    f"Loaded {song_path} [{start_sec:.2f}s -> {start_sec + duration_sec:.2f}s], shape={data.shape}"
+                )
 
             yield data
 
@@ -234,6 +236,7 @@ class StemDataset2(Dataset):
     3 - The rest of the accompaniment,
     4 - The vocals.
     """
+
     def __init__(
         self,
         subset="train",  # 'train' or 'test'
@@ -267,7 +270,6 @@ class StemDataset2(Dataset):
         self.load_count = 0
         self.song_data = None  #  this will be a shared array to store (zero-padded) song audio, persistently shared between all workers
 
-
     def load_song(self, idx, start=0, duration=None, debug=False):
         "loads one song file"
         if type(idx) is int:
@@ -279,7 +281,9 @@ class StemDataset2(Dataset):
         self.load_count += 1  # note this doesn't really work with parallel loading, i.e. when num_workers>0 :-(
         if debug or self.debug:
             print(f"{self.subset}: Loading {song_file}", flush=True)
-        data, sample_rate = stempeg.read_stems(song_file, sample_rate=self.sample_rate, start=start, duration=duration)
+        data, sample_rate = stempeg.read_stems(
+            song_file, sample_rate=self.sample_rate, start=start, duration=duration
+        )
         data = torch.tensor(data, dtype=torch.float32)
         if debug:
             print(
@@ -323,8 +327,6 @@ class StemDataset2(Dataset):
         if debug:
             print("\n__getitem__: out.shape = ", out.shape)
         return out.to(torch.float32)  # .to just to make sure...
-
-
 
 
 class StemDataset(Dataset):
@@ -535,8 +537,8 @@ class EncodingsDataset(Dataset):
         ]  # TODO: this should really go the other way
 
     def __len__(self):
-        if self.subset == 'test': # don't want validation to go on forever
-            return (len(self.songs)*10)
+        if self.subset == "test":  # don't want validation to go on forever
+            return len(self.songs) * 10
         else:
             return (
                 len(self.songs) * 100000

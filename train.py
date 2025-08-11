@@ -1,4 +1,5 @@
 import argparse
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -6,10 +7,9 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from itertools import islice
 
 import wandb
-from oplas.data import StemDataset2, StemDataset, StemChunkStream, StemChunk
+from oplas.data import StemChunk, StemChunkStream, StemDataset, StemDataset2
 from oplas.losses import vicreg_loss_fn
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector, VGGishEncoder
@@ -20,6 +20,7 @@ def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
     dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
     save_path = dir / model_path.replace(".pt", f"{suffix}.pt")
     torch.save(model, save_path)
+
 
 @torch.no_grad()
 def validate(projector, device, val_dl, model):
@@ -53,9 +54,7 @@ def validate(projector, device, val_dl, model):
         for y in ys:
             z_chunks = []
             y_hat_chunks = []
-            for i in range(
-                    y.shape[-1]
-            ):  # need to take each latent chunk independently
+            for i in range(y.shape[-1]):  # need to take each latent chunk independently
                 z_chunk, y_hat_chunk = projector(y[:, :, i])
                 z_chunks.append(z_chunk)
                 y_hat_chunks.append(y_hat_chunk)
@@ -66,12 +65,11 @@ def validate(projector, device, val_dl, model):
             y_hat = torch.stack(y_hat_chunks, -1)
             y_hats.append(y_hat)
 
-
         # calculate loss
         y_hats = torch.stack(y_hats, 1)
         ys = torch.stack(ys, 1)
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-        recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)        
+        recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
         loss = (
             vicreg_loss["var_loss"]
@@ -82,27 +80,44 @@ def validate(projector, device, val_dl, model):
 
         log = {}
 
-
-        latent = projector.decode(z_sum.permute(0,2,1)) # swap last two dims
-        latent = latent.permute(0,2,1) # have to swap it back
+        latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
+        latent = latent.permute(0, 2, 1)  # have to swap it back
         # latent = latent.view(latent.shape[0], -1)
         audio = model.decode(latent).cpu()
         log = log | {
-            "val/0/z_mix": wandb.Audio(audio[0], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-            "val/0/orig": wandb.Audio(batch[0,0,:,0].cpu(), caption="original mix", sample_rate=44100),
-            "val/1/z_mix": wandb.Audio(audio[1], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-            "val/1/orig": wandb.Audio(batch[1,0,:,0].cpu(), caption="original mix", sample_rate=44100),
-            "val/2/z_mix": wandb.Audio(audio[2], caption="decoding of audio mixed in the z domain", sample_rate=44100),
-            "val/2/orig": wandb.Audio(batch[2,0,:,0].cpu(), caption="original mix", sample_rate=44100)
+            "val/0/z_mix": wandb.Audio(
+                audio[0],
+                caption="decoding of audio mixed in the z domain",
+                sample_rate=44100,
+            ),
+            "val/0/orig": wandb.Audio(
+                batch[0, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+            ),
+            "val/1/z_mix": wandb.Audio(
+                audio[1],
+                caption="decoding of audio mixed in the z domain",
+                sample_rate=44100,
+            ),
+            "val/1/orig": wandb.Audio(
+                batch[1, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+            ),
+            "val/2/z_mix": wandb.Audio(
+                audio[2],
+                caption="decoding of audio mixed in the z domain",
+                sample_rate=44100,
+            ),
+            "val/2/orig": wandb.Audio(
+                batch[2, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+            ),
         }
 
         log = log | {
-                "val/loss": loss.detach(),
-                "val/var_loss": vicreg_loss["var_loss"].detach(),
-                "val/inv_loss": vicreg_loss["inv_loss"].detach(),
-                "val/cov_loss": vicreg_loss["cov_loss"].detach(),
-                "val/recon_loss": recon_loss.detach(),                
-            }
+            "val/loss": loss.detach(),
+            "val/var_loss": vicreg_loss["var_loss"].detach(),
+            "val/inv_loss": vicreg_loss["inv_loss"].detach(),
+            "val/cov_loss": vicreg_loss["cov_loss"].detach(),
+            "val/recon_loss": recon_loss.detach(),
+        }
         return log
 
 
@@ -169,9 +184,7 @@ load_frac = config["load_frac"]
 # )
 
 train_dataset = StemChunk(data_dir=args.data_dir, load_frac=load_frac, debug=False)
-val_dataset = StemChunk(
-    data_dir=args.data_dir, subset="test", load_frac=load_frac*2
-)
+val_dataset = StemChunk(data_dir=args.data_dir, subset="test", load_frac=load_frac * 2)
 
 train_dl = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
@@ -194,9 +207,9 @@ encoder = Music2Latent()
 
 # training loop
 with wandb.init(project=project, config=config) as run:
-    print(f'starting run {run.name}...')
+    print(f"starting run {run.name}...")
     epoch, step = 0, 0
-    tbatch = tqdm(train_dl, total=max_steps, unit="batch", desc='training')
+    tbatch = tqdm(train_dl, total=max_steps, unit="batch", desc="training")
     for step, batch in enumerate(tbatch):
         # breakpoint()
         if step >= max_steps:
@@ -233,13 +246,11 @@ with wandb.init(project=project, config=config) as run:
         # go through each stem, project it, and then recombine the projection into z_sum
         ys = mixes["ys"]
         y_hats = []
-        
+
         for y in ys:
             z_chunks = []
             y_hat_chunks = []
-            for i in range(
-                y.shape[-1]
-            ):  # need to take each latent chunk independently
+            for i in range(y.shape[-1]):  # need to take each latent chunk independently
                 z_chunk, y_hat_chunk = projector(y[:, :, i])
                 z_chunks.append(z_chunk)
                 y_hat_chunks.append(y_hat_chunk)
@@ -265,12 +276,12 @@ with wandb.init(project=project, config=config) as run:
         )
         tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["var_loss"].item())
         log = {
-                "train/loss": loss.detach(),
-                "train/var_loss": vicreg_loss["var_loss"].detach(),
-                "train/inv_loss": vicreg_loss["inv_loss"].detach(),
-                "train/cov_loss": vicreg_loss["cov_loss"].detach(),
-                "train/recon_loss": recon_loss.detach(),
-            }
+            "train/loss": loss.detach(),
+            "train/var_loss": vicreg_loss["var_loss"].detach(),
+            "train/inv_loss": vicreg_loss["inv_loss"].detach(),
+            "train/cov_loss": vicreg_loss["cov_loss"].detach(),
+            "train/recon_loss": recon_loss.detach(),
+        }
 
         if step % checkpoint_every == 0:
             save_model(
