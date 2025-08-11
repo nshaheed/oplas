@@ -14,7 +14,7 @@ from oplas.losses import vicreg_loss_fn
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector, VGGishEncoder
 
-
+n
 def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
     dir = Path(save_dir)
     dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
@@ -102,6 +102,12 @@ parser.add_argument(
     type=str,
     default="/scratch/users/nshaheed/musdb18",
     help="path to musdb18 files",
+)
+parser.add_argument(
+    "-c",
+    "--checkpoint",
+    type=str,
+    help="path to pretrained checkpoint",
 )
 parser.add_argument(
     "-t",
