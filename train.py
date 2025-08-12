@@ -73,10 +73,18 @@ def validate(projector, device, val_dl, model):
         y_mix_loss = mseloss(y_mix, y_hat_mix)
         # recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
+        # “Coefficients λ and μ are 25 and ν is 1 in Eq. (6)”
+        # - VICREG: VARIANCE-INVARIANCE-COVARIANCE REGULARIZATION FOR SELF-SUPERVISED LEARNING
+        #
+        # scaling this to line up with reconstruction loss
+        var_coeff = 1.0
+        inv_coeff = 1.0
+        cov_coeff = 1.0 / 25.0
+
         loss = (
-            vicreg_loss["var_loss"]
-            + vicreg_loss["inv_loss"]
-            + vicreg_loss["cov_loss"]
+            var_coeff * vicreg_loss["var_loss"]
+            + inv_coeff * vicreg_loss["inv_loss"]
+            + cov_coeff * vicreg_loss["cov_loss"]
             + y_loss
             + y_mix_loss
         )
