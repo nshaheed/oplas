@@ -162,7 +162,7 @@ config = {
     "max_epochs": 40,
     "max_lr": 0.002,
     "test": args.test,
-    "batch_size": 10 if args.test else 32,
+    "batch_size": 3 if args.test else 32,
     "load_frac": 0.01 if args.test else 1.0,
 }
 
@@ -222,7 +222,7 @@ with wandb.init(project=project, config=config) as run:
         with torch.no_grad():  # encoder is frozen
             # mix = mix_stems(batch, static_mix=False)
             mixes = mix_and_encode(batch, encoder)
-            y_mix = mixes["y_mix"]
+            y_mix = mixes["y_mix"].to(torch.float32)
 
         # zs is a list of the encoded stems
         zs = []
@@ -263,7 +263,7 @@ with wandb.init(project=project, config=config) as run:
 
         # calculate loss
         y_hats = torch.stack(y_hats, 1)
-        ys = torch.stack(ys, 1)
+        ys = torch.stack(ys, 1).to(torch.float32)
         # mix_loss = mseloss(z_sum, z_mix)
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
         recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
@@ -274,7 +274,7 @@ with wandb.init(project=project, config=config) as run:
             + vicreg_loss["cov_loss"]
             + recon_loss
         )
-        tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["var_loss"].item())
+        tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["inv_loss"].item())
         log = {
             "train/loss": loss.detach(),
             "train/var_loss": vicreg_loss["var_loss"].detach(),
