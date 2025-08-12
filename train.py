@@ -174,6 +174,7 @@ config = {
     "test": args.test,
     "batch_size": 3 if args.test else 32,
     "load_frac": 0.01 if args.test else 1.0,
+    "num_inner_layers": args.num_inner_layers,
 }
 
 # projector = Projector(in_dims=64, out_dims=64).to(device)
