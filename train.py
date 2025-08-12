@@ -147,6 +147,12 @@ parser.add_argument(
     action="store_true",
     help="do test run with subset of data and smaller batch size",
 )
+parser.add_argument(
+    "--num_inner_layers",
+    type=int,
+    default=6,
+    help="number of inner layers in Projector model",
+)
 args = parser.parse_args()
 
 device = torch.device("cpu")
@@ -170,7 +176,10 @@ config = {
     "load_frac": 0.01 if args.test else 1.0,
 }
 
-projector = Projector(in_dims=64, out_dims=64).to(device)
+# projector = Projector(in_dims=64, out_dims=64).to(device)
+projector = Projector(
+    in_dims=64, out_dims=64, num_inner_layers=args.num_inner_layers
+).to(device)
 
 max_epochs = config["max_epochs"]
 checkpoint_every = 200
@@ -193,7 +202,8 @@ val_dataset = StemChunk(data_dir=args.data_dir, subset="test", load_frac=load_fr
 train_dl = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
 
-max_steps = 10000
+# max_steps = 10000
+max_steps = 5000  # doing 5000 for test runs
 
 # optimizer and learning rate scheduler
 opt = torch.optim.Adam([*projector.parameters()], lr=5e-4)
