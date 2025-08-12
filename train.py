@@ -69,13 +69,16 @@ def validate(projector, device, val_dl, model):
         y_hats = torch.stack(y_hats, 1)
         ys = torch.stack(ys, 1)
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-        recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
+        y_loss = mseloss(ys, y_hats)
+        y_mix_loss = mseloss(y_mix, y_hat_mix)
+        # recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
         loss = (
             vicreg_loss["var_loss"]
             + vicreg_loss["inv_loss"]
             + vicreg_loss["cov_loss"]
-            + recon_loss
+            + y_loss
+            + y_mix_loss
         )
 
         log = {}
@@ -116,7 +119,8 @@ def validate(projector, device, val_dl, model):
             "val/var_loss": vicreg_loss["var_loss"].detach(),
             "val/inv_loss": vicreg_loss["inv_loss"].detach(),
             "val/cov_loss": vicreg_loss["cov_loss"].detach(),
-            "val/recon_loss": recon_loss.detach(),
+            "val/y_loss": y_loss.detach(),
+            "val/y_mix_loss": y_mix_loss.detach(),
         }
         return log
 
@@ -266,13 +270,16 @@ with wandb.init(project=project, config=config) as run:
         ys = torch.stack(ys, 1).to(torch.float32)
         # mix_loss = mseloss(z_sum, z_mix)
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-        recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
+        y_loss = mseloss(ys, y_hats)
+        y_mix_loss = mseloss(y_mix, y_hat_mix)
+        # recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
         loss = (
             vicreg_loss["var_loss"]
             + vicreg_loss["inv_loss"]
             + vicreg_loss["cov_loss"]
-            + recon_loss
+            + y_loss
+            + y_mix_loss
         )
         tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["inv_loss"].item())
         log = {
@@ -280,7 +287,8 @@ with wandb.init(project=project, config=config) as run:
             "train/var_loss": vicreg_loss["var_loss"].detach(),
             "train/inv_loss": vicreg_loss["inv_loss"].detach(),
             "train/cov_loss": vicreg_loss["cov_loss"].detach(),
-            "train/recon_loss": recon_loss.detach(),
+            "train/y_loss": y_loss.detach(),
+            "train/y_mix_loss": y_mix_loss.detach(),
         }
 
         if step % checkpoint_every == 0:
