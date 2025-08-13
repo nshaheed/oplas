@@ -35,17 +35,25 @@ def validate(projector, device, val_dl, model):
 
         z_sum = None
 
-        # project y_mix?
-        z_mix_chunks = []
-        y_hat_mix_chunks = []
-        for i in range(y_mix.shape[-1]):
-            # need to process each latent value independently in the audio tracks
-            z_mix_chunk, y_hat_chunk = projector(y_mix[:, :, i])
-            z_mix_chunks.append(z_mix_chunk)
-            y_hat_mix_chunks.append(y_hat_mix_chunk)
+        z_mix, y_hat_mix = projector(y_mix.permute(0, 2, 1))
+        z_mix = z_mix.permute(0, 2, 1)
+        y_hat_mix = y_hat_mix.permute(0, 2, 1)
 
-        z_mix = torch.stack(z_mix_chunks, -1)
-        y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
+        # print(f'{mseloss(y_mix, y_hat_mix.permute(0,2,1)).item()=}')
+
+        # # project y_mix?
+        # z_mix_chunks = []
+        # y_hat_mix_chunks = []
+        # for i in range(y_mix.shape[-1]):
+        #     # need to process each latent value independently in the audio tracks
+        #     z_mix_chunk, y_hat_mix_chunk = projector(y_mix[:, :, i])
+        #     z_mix_chunks.append(z_mix_chunk)
+        #     y_hat_mix_chunks.append(y_hat_mix_chunk)
+
+        # z_mix = torch.stack(z_mix_chunks, -1)
+        # y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
+
+        # print(f'{mseloss(y_mix,y_hat_mix).item()=}')
 
         # go through each stem, project it, and then recombine the projection into z_sum
         ys = mixes["ys"]
@@ -135,7 +143,7 @@ def validate(projector, device, val_dl, model):
 
 # TODO add train/test split and validation
 
-parser = argparse.ArgumentParser(description="Train or run the music2latent model.")
+parser = argparse.ArgumentParser(description="Train the oplas model.")
 parser.add_argument(
     "-d",
     "--data-dir",
@@ -250,20 +258,28 @@ with wandb.init(project=project, config=config) as run:
         zs = []
         z_sum = None
 
-        # given a y_mix, this should project into z space, and then back into y space
-        # as one audio track
-        # TODO use torch.permute() to replace the for loop
-        z_mix_chunks = []
-        y_hat_mix_chunks = []
-        for i in range(y_mix.shape[-1]):
-            # need to process each latent value independently in the audio tracks
-            z_mix_chunk, y_hat_mix_chunk = projector(y_mix[:, :, i])
-            z_mix_chunks.append(z_mix_chunk)
-            y_hat_mix_chunks.append(y_hat_mix_chunk)
+        z_mix, y_hat_mix = projector(y_mix.permute(0, 2, 1))
+        z_mix = z_mix.permute(0, 2, 1)
+        y_hat_mix = y_hat_mix.permute(0, 2, 1)
 
-        # why is this stack here? because need to combine chunking back into it
-        z_mix = torch.stack(z_mix_chunks, -1)
-        y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
+        # print(f'{mseloss(y_mix, y_hat_mix.permute(0,2,1)).item()=}')
+
+        # # given a y_mix, this should project into z space, and then back into y space
+        # # as one audio track
+        # # TODO use torch.permute() to replace the for loop
+        # z_mix_chunks = []
+        # y_hat_mix_chunks = []
+        # for i in range(y_mix.shape[-1]):
+        #     # need to process each latent value independently in the audio tracks
+        #     z_mix_chunk, y_hat_mix_chunk = projector(y_mix[:, :, i])
+        #     z_mix_chunks.append(z_mix_chunk)
+        #     y_hat_mix_chunks.append(y_hat_mix_chunk)
+
+        # # why is this stack here? because need to combine chunking back into it
+        # z_mix = torch.stack(z_mix_chunks, -1)
+        # y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
+        # print(f'{mseloss(y_mix,y_hat_mix).item()=}')
+        # breakpoint()
 
         # go through each stem, project it, and then recombine the projection into z_sum
         ys = mixes["ys"]
@@ -287,6 +303,7 @@ with wandb.init(project=project, config=config) as run:
         y_hats = torch.stack(y_hats, 1)
         ys = torch.stack(ys, 1).to(torch.float32)
         # mix_loss = mseloss(z_sum, z_mix)
+        # breakpoint()
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
         y_loss = mseloss(ys, y_hats)
         y_mix_loss = mseloss(y_mix, y_hat_mix)
