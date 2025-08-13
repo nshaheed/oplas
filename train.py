@@ -77,7 +77,6 @@ def validate(projector, device, val_dl, model, config):
         # - VICREG: VARIANCE-INVARIANCE-COVARIANCE REGULARIZATION FOR SELF-SUPERVISED LEARNING
         #
         # scaling this to line up with reconstruction loss
-        breakpoint()
         var_loss = config["var_coeff"] * vicreg_loss["var_loss"]
         inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
         cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
@@ -297,7 +296,6 @@ with wandb.init(project=project, config=config) as run:
         y_mix_loss = mseloss(y_mix, y_hat_mix)
         # recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
-        breakpoint()
         var_loss = config["var_coeff"] * vicreg_loss["var_loss"]
         inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
         cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
