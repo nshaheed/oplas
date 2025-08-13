@@ -23,7 +23,7 @@ def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
 
 
 @torch.no_grad()
-def validate(projector, device, val_dl, model):
+def validate(projector, device, val_dl, model, config):
     vbatch = islice(val_dl, 0, 1)
     for step, batch in enumerate(vbatch):
         batch = batch.to(device)
@@ -85,14 +85,15 @@ def validate(projector, device, val_dl, model):
         # - VICREG: VARIANCE-INVARIANCE-COVARIANCE REGULARIZATION FOR SELF-SUPERVISED LEARNING
         #
         # scaling this to line up with reconstruction loss
-        var_coeff = 1.0
-        inv_coeff = 1.0
-        cov_coeff = 1.0 / 25.0
+        breakpoint()
+        var_loss = config["var_coeff"] * vicreg_loss["var_loss"]
+        inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
+        cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
 
         loss = (
-            var_coeff * vicreg_loss["var_loss"]
-            + inv_coeff * vicreg_loss["inv_loss"]
-            + cov_coeff * vicreg_loss["cov_loss"]
+            var_loss
+            + inv_loss
+            + cov_loss
             + y_loss
             + y_mix_loss
         )
@@ -132,9 +133,9 @@ def validate(projector, device, val_dl, model):
 
         log = log | {
             "val/loss": loss.detach(),
-            "val/var_loss": vicreg_loss["var_loss"].detach(),
-            "val/inv_loss": vicreg_loss["inv_loss"].detach(),
-            "val/cov_loss": vicreg_loss["cov_loss"].detach(),
+            "val/var_loss": var_loss.detach(),
+            "val/inv_loss": inv_loss.detach(),
+            "val/cov_loss": cov_loss.detach(),
             "val/y_loss": y_loss.detach(),
             "val/y_mix_loss": y_mix_loss.detach(),
         }
@@ -190,6 +191,10 @@ config = {
     "test": args.test,
     "batch_size": 3 if args.test else 32,
     "load_frac": 0.01 if args.test else 1.0,
+    "num_inner_layers": args.num_inner_layers,
+    "var_coeff": 1.0,
+    "inv_coeff": 1.0,
+    "cov_coeff": 1.0 / 25.0,
 }
 
 # projector = Projector(in_dims=64, out_dims=64).to(device)
@@ -309,19 +314,24 @@ with wandb.init(project=project, config=config) as run:
         y_mix_loss = mseloss(y_mix, y_hat_mix)
         # recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
 
+        breakpoint()
+        var_loss = config["var_coeff"] * vicreg_loss["var_loss"]
+        inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
+        cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
+
         loss = (
-            vicreg_loss["var_loss"]
-            + vicreg_loss["inv_loss"]
-            + vicreg_loss["cov_loss"]
+            var_loss
+            + inv_loss
+            + cov_loss
             + y_loss
             + y_mix_loss
         )
         tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["inv_loss"].item())
         log = {
             "train/loss": loss.detach(),
-            "train/var_loss": vicreg_loss["var_loss"].detach(),
-            "train/inv_loss": vicreg_loss["inv_loss"].detach(),
-            "train/cov_loss": vicreg_loss["cov_loss"].detach(),
+            "train/var_loss": var_loss.detach(),
+            "train/inv_loss": inv_loss.detach(),
+            "train/cov_loss": cov_loss.detach(),
             "train/y_loss": y_loss.detach(),
             "train/y_mix_loss": y_mix_loss.detach(),
         }
@@ -334,7 +344,7 @@ with wandb.init(project=project, config=config) as run:
             )
 
         if step % val_every == 0:
-            log = log | validate(projector, device, val_dl, encoder)
+            log = log | validate(projector, device, val_dl, encoder, config)
 
         run.log(log)
         loss.backward()
