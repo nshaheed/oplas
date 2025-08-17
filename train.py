@@ -14,12 +14,56 @@ from oplas.losses import vicreg_loss_fn
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector, VGGishEncoder
 
+parser = argparse.ArgumentParser(description="Train the oplas model.")
+parser.add_argument(
+    "-d",
+    "--data-dir",
+    type=str,
+    default="/scratch/users/nshaheed/musdb18",
+    help="path to musdb18 files",
+)
+parser.add_argument(
+    "-c",
+    "--checkpoint",
+    type=str,
+    help="path to pretrained checkpoint",
+)
+parser.add_argument(
+    "-t",
+    "--test",
+    action="store_true",
+    help="do test run with subset of data and smaller batch size",
+)
+parser.add_argument(
+    "--num_inner_layers",
+    type=int,
+    default=6,
+    help="number of inner layers in Projector model",
+)
+# parser.add_argument(
+#     "-r",
+#     "--resume",
+#     type=str,
+#     help="path to model you want to resume the run from"
+# )
+args = parser.parse_args()
 
-def save_model(model, save_dir="./", model_path="projector.pt", suffix=""):
+
+def save_model(model, step, optimizer, scheduler, loss, save_dir="./", model_path="projector.pt", suffix=""):
     dir = Path(save_dir)
-    dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
-    save_path = dir / model_path.replace(".pt", f"{suffix}.pt")
-    torch.save(model, save_path)
+    # dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
+    # save_path = dir / model_path.replace(".pt", f"{suffix}.pt")
+    save_path = "./checkpoints/checkpoint.pt"
+
+    torch.save({
+        'step': step,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler': scheduler,
+        'loss': loss,
+    }, save_path)
+    # add file to wandb
+
 
 
 @torch.no_grad()
@@ -141,36 +185,6 @@ def validate(projector, device, val_dl, model, config):
         return log
 
 
-# TODO add train/test split and validation
-
-parser = argparse.ArgumentParser(description="Train the oplas model.")
-parser.add_argument(
-    "-d",
-    "--data-dir",
-    type=str,
-    default="/scratch/users/nshaheed/musdb18",
-    help="path to musdb18 files",
-)
-parser.add_argument(
-    "-c",
-    "--checkpoint",
-    type=str,
-    help="path to pretrained checkpoint",
-)
-parser.add_argument(
-    "-t",
-    "--test",
-    action="store_true",
-    help="do test run with subset of data and smaller batch size",
-)
-parser.add_argument(
-    "--num_inner_layers",
-    type=int,
-    default=6,
-    help="number of inner layers in Projector model",
-)
-args = parser.parse_args()
-
 device = torch.device("cpu")
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -222,8 +236,8 @@ val_dataset = StemChunk(data_dir=args.data_dir, subset="test", load_frac=load_fr
 train_dl = DataLoader(train_dataset, batch_size=batch_size, num_workers=0)
 val_dl = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
 
-# max_steps = 10000
-max_steps = 5000  # doing 5000 for test runs
+max_steps = 40000
+# max_steps = 5000  # doing 5000 for test runs
 
 # optimizer and learning rate scheduler
 opt = torch.optim.Adam([*projector.parameters()], lr=5e-4)
@@ -239,11 +253,31 @@ encoder = Music2Latent()
 # encoder = VGGishEncoder()
 # encoder = CLAPEncoder()
 
+id = None
+resume = None
+if args.checkpoint:
+    id = args.checkpoint
+    resume = "must"
+
 # training loop
-with wandb.init(project=project, config=config) as run:
+with wandb.init(project=project, config=config, id=id, resume=resume) as run:
     print(f"starting run {run.name}...")
+
     epoch, step = 0, 0
-    tbatch = tqdm(train_dl, total=max_steps, unit="batch", desc="training")
+    # resume run
+    if args.checkpoint:
+        print(f"Loading model checkpoint from run {id}")
+        artifact = wandb.use_artifact(f"{run.entity}/{run.project}/model-ckpt:v235", type='model')
+        artifact_dir = artifact.download()
+        print(f"Loading {artifact_dir}/model")
+        checkpoint = torch.load(f"{artifact_dir}/model")
+        projector.load_state_dict(checkpoint["model_state_dict"])
+        opt.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler = checkpoint["scheduler"]
+        step = checkpoint["step"]
+        
+        
+    tbatch = tqdm(train_dl, initial=step, total=max_steps, unit="batch", desc="training")
     for step, batch in enumerate(tbatch):
         # breakpoint()
         if step >= max_steps:
@@ -337,9 +371,16 @@ with wandb.init(project=project, config=config) as run:
         if step % checkpoint_every == 0:
             save_model(
                 projector,
+                step,
+                opt,
+                scheduler,
+                loss,
                 save_dir="./checkpoints",
-                suffix=f"_{run.name}_{step}",
+                suffix=f"_{run.name}",
             )
+            artifact = wandb.Artifact('model-ckpt', type='model')
+            artifact.add_file(local_path="./checkpoints/checkpoint.pt", name="model")
+            run.log_artifact(artifact)
 
         if step % val_every == 0:
             log = log | validate(projector, device, val_dl, encoder, config)

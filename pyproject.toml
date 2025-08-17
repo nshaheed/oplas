@@ -27,6 +27,8 @@ dependencies = [
   "torchdata>=0.8.0",
   "music2latent>=0.1.6",
   "vicregaddon>=0.0.4",
+  "py-spy>=0.4.1",
+  "scalene>=1.5.53",
 ]
 
 [build-system]
