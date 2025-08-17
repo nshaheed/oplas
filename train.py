@@ -49,21 +49,32 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-def save_model(model, step, optimizer, scheduler, loss, save_dir="./", model_path="projector.pt", suffix=""):
+def save_model(
+    model,
+    step,
+    optimizer,
+    scheduler,
+    loss,
+    save_dir="./",
+    model_path="projector.pt",
+    suffix="",
+):
     dir = Path(save_dir)
     # dir.mkdir(parents=True, exist_ok=True)  # make save dir if needed
     # save_path = dir / model_path.replace(".pt", f"{suffix}.pt")
     save_path = "./checkpoints/checkpoint.pt"
 
-    torch.save({
-        'step': step,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler': scheduler,
-        'loss': loss,
-    }, save_path)
+    torch.save(
+        {
+            "step": step,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler": scheduler,
+            "loss": loss,
+        },
+        save_path,
+    )
     # add file to wandb
-
 
 
 @torch.no_grad()
@@ -133,13 +144,7 @@ def validate(projector, device, val_dl, model, config):
         inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
         cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
 
-        loss = (
-            var_loss
-            + inv_loss
-            + cov_loss
-            + y_loss
-            + y_mix_loss
-        )
+        loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss
 
         log = {}
 
@@ -267,7 +272,9 @@ with wandb.init(project=project, config=config, id=id, resume=resume) as run:
     # resume run
     if args.checkpoint:
         print(f"Loading model checkpoint from run {id}")
-        artifact = wandb.use_artifact(f"{run.entity}/{run.project}/model-ckpt:v235", type='model')
+        artifact = wandb.use_artifact(
+            f"{run.entity}/{run.project}/model-ckpt:v235", type="model"
+        )
         artifact_dir = artifact.download()
         print(f"Loading {artifact_dir}/model")
         checkpoint = torch.load(f"{artifact_dir}/model")
@@ -275,9 +282,10 @@ with wandb.init(project=project, config=config, id=id, resume=resume) as run:
         opt.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler = checkpoint["scheduler"]
         step = checkpoint["step"]
-        
-        
-    tbatch = tqdm(train_dl, initial=step, total=max_steps, unit="batch", desc="training")
+
+    tbatch = tqdm(
+        train_dl, initial=step, total=max_steps, unit="batch", desc="training"
+    )
     for step, batch in enumerate(tbatch):
         # breakpoint()
         if step >= max_steps:
@@ -351,13 +359,7 @@ with wandb.init(project=project, config=config, id=id, resume=resume) as run:
         inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
         cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
 
-        loss = (
-            var_loss
-            + inv_loss
-            + cov_loss
-            + y_loss
-            + y_mix_loss
-        )
+        loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss
         tbatch.set_postfix(loss=loss.item(), mix_loss=vicreg_loss["inv_loss"].item())
         log = {
             "train/loss": loss.detach(),
@@ -378,7 +380,7 @@ with wandb.init(project=project, config=config, id=id, resume=resume) as run:
                 save_dir="./checkpoints",
                 suffix=f"_{run.name}",
             )
-            artifact = wandb.Artifact('model-ckpt', type='model')
+            artifact = wandb.Artifact("model-ckpt", type="model")
             artifact.add_file(local_path="./checkpoints/checkpoint.pt", name="model")
             run.log_artifact(artifact)
 
