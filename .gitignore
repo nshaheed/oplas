@@ -1,3 +1,15 @@
+# sherlock logs
+*.err
+*.out
+
+# emacs stuff
+*~
+
+# runs && wandb 
+artifacts/
+checkpoints/
+wandb/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
