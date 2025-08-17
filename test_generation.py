@@ -28,8 +28,8 @@ projector = torch.load(
 )
 # projector = Projector(64, 64, trivial=True)
 
-song_file = "data/test/Al James - Schoolboy Facination.stem.mp4"
-# song_file = "data/train/James May - All Souls Moon.stem.mp4"
+# song_file = "data/test/Al James - Schoolboy Facination.stem.mp4"
+song_file = "data/train/James May - All Souls Moon.stem.mp4"
 
 data, sr = stempeg.read_stems(song_file, sample_rate=44100)
 data = torch.tensor(data, dtype=torch.float32)
