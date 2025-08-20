@@ -220,19 +220,18 @@ def train(run, config, checkpoint=None):
 
     # --- Training Loop ---
     projector.train()
-    step_iterator = islice(iter(train_dl), start_step, config.max_steps)
     tbatch = tqdm(
-        step_iterator,
+        iter(train_dl),
         initial=start_step,
         total=config.max_steps,
         unit="batch",
         desc="training",
     )
 
-    for step, batch in enumerate(tbatch, start=start_step):
+    for batch in tbatch:
+        step = tbatch.n
         if step >= config.max_steps:
             break
-
         batch = batch.to(device)
         opt.zero_grad()
 
@@ -288,7 +287,7 @@ def train(run, config, checkpoint=None):
             val_log = validate(projector, device, val_dl, encoder, config)
             log_dict.update(val_log)
 
-        run.log(log_dict, step=step)
+        run.log(log_dict)
 
         if step % config.checkpoint_every == 0 and step > 0:
             checkpoint_path = save_model(projector, step, opt, scheduler, loss, run.id)
