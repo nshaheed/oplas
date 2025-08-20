@@ -5,6 +5,7 @@ import random
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from glob import glob
+import sys
 
 import numpy as np
 import stempeg
@@ -69,10 +70,16 @@ class StemChunk(IterableDataset):
         print(f"{self.subset}: Preloading songs...")
         self.songs = []
 
-        for i, song_name in tqdm(enumerate(self.songs_listed), desc="loading audio"):
+        for i, song_name in tqdm(
+            enumerate(self.songs_listed),
+            desc="loading audio",
+            file=sys.stdout,
+            disable=not sys.stdout.isatty(),
+        ):
             self.songs.append(self.load_song(i))
 
     def load_song(self, idx, start=0, duration=None, debug=False):
+        print("in load song...")
         "loads one song file"
         if type(idx) is int:
             song_file = self.songs_listed[idx]
