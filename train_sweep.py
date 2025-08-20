@@ -15,7 +15,7 @@ import wandb
 
 # Assuming your custom modules are in the python path
 from oplas.data import StemChunk
-from oplas.losses import vicreg_loss_fn
+from oplas.losses import vicreg_loss_fn, pseudo_huber
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector
 
@@ -42,6 +42,15 @@ def save_model(
         save_path,
     )
     return save_path
+
+def get_loss_fn(val):
+    loss_fn = nn.MSELoss()
+    if val == 'mse':
+        loss_fn = nn.MSELoss()
+    elif val == 'pseudo-huber':
+        loss_fn = pseudo_huber
+
+    return loss_fn
 
 
 @torch.no_grad()
@@ -86,10 +95,10 @@ def validate(projector, device, val_dl, encoder, config):
     z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
     z_sum = z_sum.permute(0, 2, 1).contiguous()
 
-    mseloss = nn.MSELoss()
+    loss_fn = get_loss_fn(config.loss)
     vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-    y_loss = mseloss(ys_tensor, y_hats)
-    y_mix_loss = mseloss(y_mix, y_hat_mix)
+    y_loss = loss_fn(ys_tensor, y_hats)
+    y_mix_loss = loss_fn(y_mix, y_hat_mix)
 
     var_loss = config.var_coeff * vicreg_loss["var_loss"]
     inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
@@ -172,7 +181,8 @@ def train(run, config, checkpoint=None):
     #     opt, max_lr=config.learning_rate, total_steps=config.max_steps
     # )
     scheduler = None
-    mseloss = nn.MSELoss()
+
+    loss_fn = get_loss_fn(config.loss)
 
     start_step = 0
 
@@ -248,8 +258,8 @@ def train(run, config, checkpoint=None):
 
         # --- Loss Calculation ---
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-        y_loss = mseloss(ys_tensor, y_hats)
-        y_mix_loss = mseloss(y_mix, y_hat_mix)
+        y_loss = loss_fn(ys_tensor, y_hats)
+        y_mix_loss = loss_fn(y_mix, y_hat_mix)
 
         var_loss = config.var_coeff * vicreg_loss["var_loss"]
         inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
@@ -328,6 +338,7 @@ def main():
     parser.add_argument("--load_frac", type=float, default=1.0)
     parser.add_argument("--checkpoint_every", type=int, default=400)
     parser.add_argument("--val_every", type=int, default=200)
+    parser.add_argument("--loss", type=str, default="mse", help="which loss function to use [mse,pseudo-huber]")    
 
     args = parser.parse_args()
 
@@ -363,6 +374,7 @@ def main():
             "load_frac": args.load_frac,
             "checkpoint_every": args.checkpoint_every,
             "val_every": args.val_every,
+            "loss": args.loss,
         }
         with wandb.init(config=config) as run:
             train(run, run.config)

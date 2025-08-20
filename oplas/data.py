@@ -79,7 +79,6 @@ class StemChunk(IterableDataset):
             self.songs.append(self.load_song(i))
 
     def load_song(self, idx, start=0, duration=None, debug=False):
-        print("in load song...")
         "loads one song file"
         if type(idx) is int:
             song_file = self.songs_listed[idx]

@@ -207,7 +207,7 @@ config = {
     "max_epochs": 40,
     "max_lr": 0.002,
     "test": args.test,
-    "batch_size": 3 if args.test else 32,
+    "batch_size": 32 if args.test else 32,
     "load_frac": 0.01 if args.test else 1.0,
     "num_inner_layers": args.num_inner_layers,
     "var_coeff": 1.0,
@@ -331,6 +331,7 @@ with wandb.init(project=project, config=config, id=id, resume=resume) as run:
         ys = mixes["ys"]
         y_hats = []
 
+        breakpoint()
         for y in ys:
             z_chunks = []
             y_hat_chunks = []
@@ -349,7 +350,7 @@ with wandb.init(project=project, config=config, id=id, resume=resume) as run:
         y_hats = torch.stack(y_hats, 1)
         ys = torch.stack(ys, 1).to(torch.float32)
         # mix_loss = mseloss(z_sum, z_mix)
-        # breakpoint()
+        breakpoint()
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
         y_loss = mseloss(ys, y_hats)
         y_mix_loss = mseloss(y_mix, y_hat_mix)
