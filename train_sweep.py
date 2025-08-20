@@ -198,7 +198,6 @@ def train(run, config, checkpoint=None):
 
     # --- Data Loading ---
     train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
-    # breakpoint()
     val_dataset = StemChunk(
         data_dir=config.data_dir, subset="test", load_frac=config.load_frac
     )
@@ -346,7 +345,6 @@ def main():
     elif args.resume_run_id:
         project = "oplas"
         with wandb.init(project=project, id=args.resume_run_id, resume="must") as run:
-            breakpoint()  # need to validate
             config = run.config  # restore config from original run
             train(run, config, checkpoint=args.checkpoint)
 

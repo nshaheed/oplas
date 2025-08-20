@@ -4,6 +4,13 @@ from vicregaddon import vicreg_cov_loss, vicreg_inv_loss, vicreg_var_loss
 
 from .mixing import do_encode, mix_and_encode
 
+def psuedo_huber(l1, l2, c=0.03):
+    """
+    Psuedo_huber loss as used in the music2latent paper.
+    The default c values is used in the music2latent papers and comes from:
+    "IMPROVED TECHNIQUES FOR TRAINING CONSISTENCY MODELS" - Song & Dhariwal
+    """
+    pass
 
 def vicreg_loss_fn(
     x,
