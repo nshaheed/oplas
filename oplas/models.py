@@ -70,8 +70,11 @@ class Projector(nn.Module):
     ):
         super().__init__()
         self.resid, self.trivial = resid, trivial
+        self.in_dims, self.out_dims = in_dims, out_dims
         hidden_dims = hidden_dims_scale * in_dims
         # resid=False # turn it off for inner layers, just leave outer resid
+
+        # if using resid, only apply to the innermost block when the dims fit
         self.encoder = nn.Sequential(
             block(in_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid),
             *[
@@ -97,13 +100,14 @@ class Projector(nn.Module):
         z = self.encoder(
             y
         )  # transpose is just so embeddings dim goes last for matrix mult
-        return z + y if self.resid else z
+        # return xin + x if (self.resid and self.in_dims == self.out_dims) else x
+        return z + y if (self.resid and self.in_dims == self.out_dims) else z
 
     def decode(self, z):
         if self.trivial:
             return z
         y = self.decoder(z)  # .transpose(1,2)).transpose(1,2)
-        return y + z if self.resid else y
+        return y + z if (self.resid and self.in_dims == self.out_dims) else y
 
     def forward(
         self,

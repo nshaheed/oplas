@@ -1,31 +1,34 @@
 # sweep.yaml
 program: train_sweep.py # The script to run
-method: bayes
+method: random
 metric:
   name: val/recon_loss
   goal: minimize
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: 3.2e-4
-    max: 1.153e-3
+    min: 1.0e-6
+    max: 1.0e-2
   num_inner_layers:
-    values: [4, 6]
+    value: 4
   hidden_dims_scale:
-    values: [4, 8, 12, 16]
+    value: 8
   var_coeff:
-    distribution: uniform
-    min: 0.55
-    max: 0.86
+    value: 0.8525204745756596
   inv_coeff:
     value: 1.0
   cov_coeff:
     value: 0.04 # 1/25  
+  loss:
+    value: "pseudo-huber"
+  projector_dims:
+    values: [64, 128]
+
 
 # --- Static parameters can be defined here too ---
 # --- These will be included in wandb.config for every run ---
   max_steps:
-    value: 20000
+    value: 8001
   load_frac:
     value: 1.0 # Use 0.01 for quick test runs
   checkpoint_every:

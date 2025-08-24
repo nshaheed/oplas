@@ -64,6 +64,8 @@ def validate(projector, device, val_dl, encoder, config):
         print("Validation dataloader is empty.")
         return {}
 
+    breakpoint()
+
     # --- Your validation logic remains the same ---
     mixes = mix_and_encode(batch, encoder)
     y_mix = mixes["y_mix"]
@@ -151,7 +153,7 @@ def validate(projector, device, val_dl, encoder, config):
     return log
 
 
-def train(run, config, checkpoint=None):
+def train(run, config, checkpoint=None, ignore_max_steps=False):
     """Main training function wrapped for W&B sweeps."""
     # Initialize a new wandb run
     # run = wandb.init()
@@ -168,7 +170,7 @@ def train(run, config, checkpoint=None):
     # --- Model, Optimizer, Scheduler ---
     projector = Projector(
         in_dims=64,
-        out_dims=64,
+        out_dims=config.projector_dims,
         num_inner_layers=config.num_inner_layers,
         hidden_dims_scale=config.hidden_dims_scale,
     ).to(device)
@@ -230,7 +232,7 @@ def train(run, config, checkpoint=None):
 
     for batch in tbatch:
         step = tbatch.n
-        if step >= config.max_steps:
+        if step >= config.max_steps and not ignore_max_steps:
             break
         batch = batch.to(device)
         opt.zero_grad()
@@ -323,6 +325,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-3)
     parser.add_argument("--num_inner_layers", type=int, default=6)
     parser.add_argument("--hidden_dims_scale", type=int, default=6)
+    parser.add_argument("--projector_dims", type=int, default=64, help="num of dims in projection space")
 
     parser.add_argument("--var_coeff", type=float, default=1.0)
     parser.add_argument("--inv_coeff", type=float, default=1.0)
@@ -338,6 +341,7 @@ def main():
     parser.add_argument("--checkpoint_every", type=int, default=400)
     parser.add_argument("--val_every", type=int, default=200)
     parser.add_argument("--loss", type=str, default="mse", help="which loss function to use [mse,pseudo-huber]")    
+    parser.add_argument("--ignore_max_steps", action=argparse.BooleanOptionalAction, help="ignore max step and train forever")
 
     args = parser.parse_args()
 
@@ -347,7 +351,7 @@ def main():
         def sweep_train():
             with wandb.init() as run:
                 config = wandb.config  # get hyperparams from sweep
-                train(run, config)
+                train(run, config, ignore_max_steps=args.ignore_max_steps)
 
         wandb.agent(args.sweep_id, function=sweep_train)
 
@@ -356,7 +360,7 @@ def main():
         project = "oplas"
         with wandb.init(project=project, id=args.resume_run_id, resume="must") as run:
             config = run.config  # restore config from original run
-            train(run, config, checkpoint=args.checkpoint)
+            train(run, config, checkpoint=args.checkpoint, ignore_max_steps=args.ignore_max_steps)
 
     # --- Mode 3: Single run ---
     else:
@@ -364,6 +368,7 @@ def main():
             "learning_rate": args.learning_rate,
             "num_inner_layers": args.num_inner_layers,
             "hidden_dims_scale": args.hidden_dims_scale,
+            "projector_dims": args.projector_dims,
             "var_coeff": args.var_coeff,
             "inv_coeff": args.inv_coeff,
             "cov_coeff": args.cov_coeff,
@@ -376,7 +381,7 @@ def main():
             "loss": args.loss,
         }
         with wandb.init(config=config) as run:
-            train(run, run.config)
+            train(run, run.config, ignore_max_steps=args.ignore_max_steps)
 
 
 if __name__ == "__main__":
