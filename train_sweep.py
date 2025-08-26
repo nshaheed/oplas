@@ -52,6 +52,226 @@ def get_loss_fn(val):
 
     return loss_fn
 
+@torch.no_grad()
+def validate_old_old(projector, device, val_dl, encoder, config, batch):
+    # the old way that uses loops
+    # vbatch = islice(val_dl, 0, 1)
+    # for step, batch in enumerate(vbatch):
+    #     batch = batch.to(device)
+    projector.eval()
+
+    mixes = mix_and_encode(batch, encoder)
+    y_mix = mixes["y_mix"]
+    # zs is a list of the encoded stems
+    zs = []
+
+    z_sum = None
+
+    z_mix, y_hat_mix = projector(y_mix.permute(0, 2, 1))
+    z_mix = z_mix.permute(0, 2, 1)
+    y_hat_mix = y_hat_mix.permute(0, 2, 1)
+
+    # print(f'{mseloss(y_mix, y_hat_mix.permute(0,2,1)).item()=}')
+
+    # # project y_mix?
+    # z_mix_chunks = []
+    # y_hat_mix_chunks = []
+    # for i in range(y_mix.shape[-1]):
+    #     # need to process each latent value independently in the audio tracks
+    #     z_mix_chunk, y_hat_mix_chunk = projector(y_mix[:, :, i])
+    #     z_mix_chunks.append(z_mix_chunk)
+    #     y_hat_mix_chunks.append(y_hat_mix_chunk)
+
+    # z_mix = torch.stack(z_mix_chunks, -1)
+    # y_hat_mix = torch.stack(y_hat_mix_chunks, -1)
+
+    # print(f'{mseloss(y_mix,y_hat_mix).item()=}')
+
+    # go through each stem, project it, and then recombine the projection into z_sum
+    ys = mixes["ys"]
+    y_hats = []
+
+    for y in ys:
+        z_chunks = []
+        y_hat_chunks = []
+        for i in range(y.shape[-1]):  # need to take each latent chunk independently
+            z_chunk, y_hat_chunk = projector(y[:, :, i])
+            z_chunks.append(z_chunk)
+            y_hat_chunks.append(y_hat_chunk)
+
+        z = torch.stack(z_chunks, -1)
+        z_sum = z if z_sum is None else z + z_sum
+        zs.append(z)
+        y_hat = torch.stack(y_hat_chunks, -1)
+        y_hats.append(y_hat)
+
+    # calculate loss
+    loss_fn = get_loss_fn(config.loss)
+    y_hats = torch.stack(y_hats, 1)
+    ys = torch.stack(ys, 1)
+    vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
+    y_loss = loss_fn(ys, y_hats)
+    y_mix_loss = loss_fn(y_mix, y_hat_mix)
+    # recon_loss = mseloss(y_mix, y_hat_mix) + mseloss(ys, y_hats)
+
+    # “Coefficients λ and μ are 25 and ν is 1 in Eq. (6)”
+    # - VICREG: VARIANCE-INVARIANCE-COVARIANCE REGULARIZATION FOR SELF-SUPERVISED LEARNING
+    #
+    # scaling this to line up with reconstruction loss
+    var_loss = config["var_coeff"] * vicreg_loss["var_loss"]
+    inv_loss = config["inv_coeff"] * vicreg_loss["inv_loss"]
+    cov_loss = config["cov_coeff"] * vicreg_loss["cov_loss"]
+
+    loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss
+
+    log = {}
+
+    latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
+    latent = latent.permute(0, 2, 1)  # have to swap it back
+
+    return latent, z_sum, z_mix, y_hat_mix, None, y_hats
+    # latent = latent.view(latent.shape[0], -1)
+    audio = model.decode(latent).cpu()
+    log = log | {
+        "val/0/z_mix": wandb.Audio(
+            audio[0],
+            caption="decoding of audio mixed in the z domain",
+            sample_rate=44100,
+        ),
+        "val/0/orig": wandb.Audio(
+            batch[0, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+        ),
+        "val/1/z_mix": wandb.Audio(
+            audio[1],
+            caption="decoding of audio mixed in the z domain",
+            sample_rate=44100,
+        ),
+        "val/1/orig": wandb.Audio(
+            batch[1, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+        ),
+        "val/2/z_mix": wandb.Audio(
+            audio[2],
+            caption="decoding of audio mixed in the z domain",
+            sample_rate=44100,
+        ),
+        "val/2/orig": wandb.Audio(
+            batch[2, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+        ),
+    }
+
+    log = log | {
+        "val/loss": loss.detach(),
+        "val/var_loss": var_loss.detach(),
+        "val/inv_loss": inv_loss.detach(),
+        "val/cov_loss": cov_loss.detach(),
+        "val/y_loss": y_loss.detach(),
+        "val/y_mix_loss": y_mix_loss.detach(),
+    }
+    return log
+
+
+# @torch.no_grad()
+# def validate_old(projector, device, val_dl, encoder, config, batch):
+#     """Validation function, slightly simplified for clarity."""
+#     projector.eval()  # Set model to evaluation mode
+#     # vbatch_iter = iter(val_dl)
+#     # try:
+#     #     batch = next(vbatch_iter).to(device)
+#     # except StopIteration:
+#     #     print("Validation dataloader is empty.")
+#     #     return {}
+
+#     # breakpoint()
+
+#     # --- Your validation logic remains the same ---
+#     mixes = mix_and_encode(batch, encoder)
+#     y_mix = mixes["y_mix"]
+#     z_sum = None
+
+#     z_mix, y_hat_mix = projector(y_mix.permute(0, 2, 1))
+#     z_mix = z_mix.permute(0, 2, 1)
+#     y_hat_mix = y_hat_mix.permute(0, 2, 1)
+
+#     ys = mixes["ys"]
+#     y_hats = []
+
+#     # This loop is inefficient. Let's vectorize it.
+#     # Original loop processed each time step independently. We can do it all at once.
+#     # New vectorized approach:
+#     ys_tensor = torch.stack(ys, dim=1).to(device)  # [B, S, D, T] S=num_stems
+#     B, S, D, T = ys_tensor.shape
+#     # ys_permuted = ys_tensor.permute(0, 1, 3, 2).reshape(
+#     #     B * S * T, D
+#     # )  # Reshape for projector
+#     ys_permuted = ys_tensor.permute(0, 1, 3, 2)
+
+#     z_stems, y_hats = projector(ys_permuted)
+
+#     # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)  # Reshape back
+#     # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
+#     y_hats = y_hats.permute(0, 1, 3, 2)
+
+#     z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
+#     z_sum = z_sum.permute(0, 2, 1).contiguous()
+
+#     loss_fn = get_loss_fn(config.loss)
+#     vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
+#     y_loss = loss_fn(ys_tensor, y_hats)
+#     y_mix_loss = loss_fn(y_mix, y_hat_mix)
+
+#     var_loss = config.var_coeff * vicreg_loss["var_loss"]
+#     inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
+#     cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
+
+#     loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss
+
+#     log = {
+#         "val/loss": loss.detach(),
+#         "val/var_loss": var_loss.detach(),
+#         "val/inv_loss": inv_loss.detach(),
+#         "val/cov_loss": cov_loss.detach(),
+#         "val/y_loss": y_loss.detach(),
+#         "val/y_mix_loss": y_mix_loss.detach(),
+#         "val/recon_loss": y_mix_loss.item() + y_loss.item(),
+#     }
+
+#     # actually generate some audio examples
+#     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
+#     latent = latent.permute(0, 2, 1)  # have to swap it back
+
+#     return latent, z_sum, z_mix, y_hat_mix, z_stems, y_hats
+
+#     audio = encoder.decode(latent).cpu()
+#     log = log | {
+#         "val/0/z_mix": wandb.Audio(
+#             audio[0],
+#             caption="decoding of audio mixed in the z domain",
+#             sample_rate=44100,
+#         ),
+#         "val/0/orig": wandb.Audio(
+#             batch[0, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+#         ),
+#         "val/1/z_mix": wandb.Audio(
+#             audio[1],
+#             caption="decoding of audio mixed in the z domain",
+#             sample_rate=44100,
+#         ),
+#         "val/1/orig": wandb.Audio(
+#             batch[1, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+#         ),
+#         "val/2/z_mix": wandb.Audio(
+#             audio[2],
+#             caption="decoding of audio mixed in the z domain",
+#             sample_rate=44100,
+#         ),
+#         "val/2/orig": wandb.Audio(
+#             batch[2, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+#         ),
+#     }
+
+#     projector.train()  # Set model back to training mode
+#     return log
+
 
 @torch.no_grad()
 def validate(projector, device, val_dl, encoder, config):
@@ -62,9 +282,7 @@ def validate(projector, device, val_dl, encoder, config):
         batch = next(vbatch_iter).to(device)
     except StopIteration:
         print("Validation dataloader is empty.")
-        return {}
-
-    breakpoint()
+        return {};
 
     # --- Your validation logic remains the same ---
     mixes = mix_and_encode(batch, encoder)
@@ -75,38 +293,30 @@ def validate(projector, device, val_dl, encoder, config):
     z_mix = z_mix.permute(0, 2, 1)
     y_hat_mix = y_hat_mix.permute(0, 2, 1)
 
-    ys = mixes["ys"]
-    y_hats = []
-
-    # This loop is inefficient. Let's vectorize it.
-    # Original loop processed each time step independently. We can do it all at once.
-    # New vectorized approach:
-    ys_tensor = torch.stack(ys, dim=1).to(device)  # [B, S, D, T] S=num_stems
+    ys_tensor = torch.stack(mixes["ys"], dim=1).to(torch.float32)
     B, S, D, T = ys_tensor.shape
-    # ys_permuted = ys_tensor.permute(0, 1, 3, 2).reshape(
-    #     B * S * T, D
-    # )  # Reshape for projector
     ys_permuted = ys_tensor.permute(0, 1, 3, 2)
-
     z_stems, y_hats = projector(ys_permuted)
 
-    # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)  # Reshape back
-    # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
-    y_hats = y_hats.permute(0, 1, 3, 2)
-
     z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
+    y_sum = projector.decode(z_sum).permute(0,2,1)
     z_sum = z_sum.permute(0, 2, 1).contiguous()
+    y_hats = y_hats.permute(0, 1, 3, 2)
 
     loss_fn = get_loss_fn(config.loss)
     vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
     y_loss = loss_fn(ys_tensor, y_hats)
     y_mix_loss = loss_fn(y_mix, y_hat_mix)
+    sum_loss = loss_fn(y_mix, y_sum)
 
     var_loss = config.var_coeff * vicreg_loss["var_loss"]
-    inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
+    # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
+    inv_loss = loss_fn(z_mix, z_sum)
     cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
 
-    loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss
+    loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss
+
+    # testing z_sum back to y_sum
 
     log = {
         "val/loss": loss.detach(),
@@ -115,13 +325,16 @@ def validate(projector, device, val_dl, encoder, config):
         "val/cov_loss": cov_loss.detach(),
         "val/y_loss": y_loss.detach(),
         "val/y_mix_loss": y_mix_loss.detach(),
-        "val/recon_loss": y_mix_loss.item() + y_loss.item(),
+        "val/sum_loss": sum_loss.detach(),
+        "val/recon_loss": y_mix_loss.item() + y_loss.item() + inv_loss.item() + sum_loss.item(),
     }
 
     # actually generate some audio examples
     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
     latent = latent.permute(0, 2, 1)  # have to swap it back
+
     audio = encoder.decode(latent).cpu()
+
     log = log | {
         "val/0/z_mix": wandb.Audio(
             audio[0],
@@ -167,10 +380,13 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     # config.num_inner_layers = 1
     # config.hidden_dims_scale = 1
 
+    # handle old models where this wasn't a variable
+    out_dims = config.projector_dims if 'projector_dims' in config else 64
+
     # --- Model, Optimizer, Scheduler ---
     projector = Projector(
         in_dims=64,
-        out_dims=config.projector_dims,
+        out_dims=out_dims,
         num_inner_layers=config.num_inner_layers,
         hidden_dims_scale=config.hidden_dims_scale,
     ).to(device)
@@ -254,6 +470,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         z_sum = torch.sum(z_stems, dim=1)
+        y_sum = projector.decode(z_sum).permute(0,2,1)
         z_sum = z_sum.permute(0, 2, 1).contiguous()
         y_hats = y_hats.permute(0, 1, 3, 2)
 
@@ -261,12 +478,14 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
         y_loss = loss_fn(ys_tensor, y_hats)
         y_mix_loss = loss_fn(y_mix, y_hat_mix)
+        sum_loss = loss_fn(y_mix, y_sum)
 
         var_loss = config.var_coeff * vicreg_loss["var_loss"]
-        inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
+        # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
+        inv_loss = loss_fn(z_mix, z_sum)
         cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
 
-        loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss
+        loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss
 
         loss.backward()
         opt.step()
@@ -282,7 +501,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             "train/cov_loss": cov_loss.item(),
             "train/y_loss": y_loss.item(),
             "train/y_mix_loss": y_mix_loss.item(),
-            "train/recon_loss": y_mix_loss.item() + y_loss.item(),
+            "train/sum_loss": sum_loss.detach(),
+            "train/recon_loss": y_mix_loss.item() + y_loss.item() + inv_loss.item() + sum_loss.item(),
         }
 
         if step % config.val_every == 0:
