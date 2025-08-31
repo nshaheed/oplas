@@ -1,18 +1,30 @@
 # sweep.yaml
 program: train_sweep.py # The script to run
-method: random
+method: bayes
 metric:
   name: val/recon_loss
   goal: minimize
+early_terminate:
+  type: hyperband
+  min_iter: 400
+  eta: 2
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: 1.0e-6
-    max: 1.0e-2
+    min: 1.0e-4
+    max: 0.01
+  adams_beta1:
+    distribution: log_uniform_values
+    min: 0.8
+    max: 0.95
+  adams_epsilon:
+    distribution: log_uniform_values
+    min: 1.0e-9
+    max: 1.0e-7
   num_inner_layers:
-    value: 4
+    values: [1, 2]
   hidden_dims_scale:
-    value: 8
+    values: [4, 8]
   var_coeff:
     value: 0.8525204745756596
   inv_coeff:
@@ -22,7 +34,7 @@ parameters:
   loss:
     value: "pseudo-huber"
   projector_dims:
-    values: [64, 128]
+    value: 256
 
 
 # --- Static parameters can be defined here too ---

@@ -4,6 +4,7 @@ from vicregaddon import vicreg_cov_loss, vicreg_inv_loss, vicreg_var_loss
 
 from .mixing import do_encode, mix_and_encode
 
+
 def pseudo_huber(l1, l2, c=0.03):
     """
     Pseudo_huber loss as used in the music2latent paper.
@@ -11,7 +12,8 @@ def pseudo_huber(l1, l2, c=0.03):
     "IMPROVED TECHNIQUES FOR TRAINING CONSISTENCY MODELS" - Song & Dhariwal
     """
     # assuming mean reduction
-    return torch.mean(torch.sqrt( torch.abs(l1 - l2) ** 2 + (c**2) ) - c)
+    return torch.mean(torch.sqrt(torch.abs(l1 - l2) ** 2 + (c**2)) - c)
+
 
 def vicreg_loss_fn(
     x,

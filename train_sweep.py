@@ -43,14 +43,16 @@ def save_model(
     )
     return save_path
 
+
 def get_loss_fn(val):
     loss_fn = nn.MSELoss()
-    if val == 'mse':
+    if val == "mse":
         loss_fn = nn.MSELoss()
-    elif val == 'pseudo-huber':
+    elif val == "pseudo-huber":
         loss_fn = pseudo_huber
 
     return loss_fn
+
 
 @torch.no_grad()
 def validate_old_old(projector, device, val_dl, encoder, config, batch):
@@ -282,7 +284,7 @@ def validate(projector, device, val_dl, encoder, config):
         batch = next(vbatch_iter).to(device)
     except StopIteration:
         print("Validation dataloader is empty.")
-        return {};
+        return {}
 
     # --- Your validation logic remains the same ---
     mixes = mix_and_encode(batch, encoder)
@@ -299,7 +301,7 @@ def validate(projector, device, val_dl, encoder, config):
     z_stems, y_hats = projector(ys_permuted)
 
     z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
-    y_sum = projector.decode(z_sum).permute(0,2,1)
+    y_sum = projector.decode(z_sum).permute(0, 2, 1)
     z_sum = z_sum.permute(0, 2, 1).contiguous()
     y_hats = y_hats.permute(0, 1, 3, 2)
 
@@ -326,7 +328,10 @@ def validate(projector, device, val_dl, encoder, config):
         "val/y_loss": y_loss.detach(),
         "val/y_mix_loss": y_mix_loss.detach(),
         "val/sum_loss": sum_loss.detach(),
-        "val/recon_loss": y_mix_loss.item() + y_loss.item() + inv_loss.item() + sum_loss.item(),
+        "val/recon_loss": y_mix_loss.item()
+        + y_loss.item()
+        + inv_loss.item()
+        + sum_loss.item(),
     }
 
     # actually generate some audio examples
@@ -381,7 +386,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     # config.hidden_dims_scale = 1
 
     # handle old models where this wasn't a variable
-    out_dims = config.projector_dims if 'projector_dims' in config else 64
+    out_dims = config.projector_dims if "projector_dims" in config else 64
 
     # --- Model, Optimizer, Scheduler ---
     projector = Projector(
@@ -393,7 +398,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
-    opt = torch.optim.Adam(projector.parameters(), lr=config.learning_rate)
+    opt = torch.optim.Adam(
+        projector.parameters(),
+        lr=config.learning_rate,
+        betas=(config.adams_beta1, 0.999),
+        eps=config.adams_epsilon,
+    )
     # TODO use fixed learning rate for now
     # scheduler = torch.optim.lr_scheduler.OneCycleLR(
     #     opt, max_lr=config.learning_rate, total_steps=config.max_steps
@@ -470,7 +480,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         z_sum = torch.sum(z_stems, dim=1)
-        y_sum = projector.decode(z_sum).permute(0,2,1)
+        y_sum = projector.decode(z_sum).permute(0, 2, 1)
         z_sum = z_sum.permute(0, 2, 1).contiguous()
         y_hats = y_hats.permute(0, 1, 3, 2)
 
@@ -502,7 +512,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             "train/y_loss": y_loss.item(),
             "train/y_mix_loss": y_mix_loss.item(),
             "train/sum_loss": sum_loss.detach(),
-            "train/recon_loss": y_mix_loss.item() + y_loss.item() + inv_loss.item() + sum_loss.item(),
+            "train/recon_loss": y_mix_loss.item()
+            + y_loss.item()
+            + inv_loss.item()
+            + sum_loss.item(),
         }
 
         if step % config.val_every == 0:
@@ -545,7 +558,9 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-3)
     parser.add_argument("--num_inner_layers", type=int, default=6)
     parser.add_argument("--hidden_dims_scale", type=int, default=6)
-    parser.add_argument("--projector_dims", type=int, default=64, help="num of dims in projection space")
+    parser.add_argument(
+        "--projector_dims", type=int, default=64, help="num of dims in projection space"
+    )
 
     parser.add_argument("--var_coeff", type=float, default=1.0)
     parser.add_argument("--inv_coeff", type=float, default=1.0)
@@ -560,8 +575,17 @@ def main():
     parser.add_argument("--load_frac", type=float, default=1.0)
     parser.add_argument("--checkpoint_every", type=int, default=400)
     parser.add_argument("--val_every", type=int, default=200)
-    parser.add_argument("--loss", type=str, default="mse", help="which loss function to use [mse,pseudo-huber]")    
-    parser.add_argument("--ignore_max_steps", action=argparse.BooleanOptionalAction, help="ignore max step and train forever")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="mse",
+        help="which loss function to use [mse,pseudo-huber]",
+    )
+    parser.add_argument(
+        "--ignore_max_steps",
+        action=argparse.BooleanOptionalAction,
+        help="ignore max step and train forever",
+    )
 
     args = parser.parse_args()
 
@@ -580,7 +604,12 @@ def main():
         project = "oplas"
         with wandb.init(project=project, id=args.resume_run_id, resume="must") as run:
             config = run.config  # restore config from original run
-            train(run, config, checkpoint=args.checkpoint, ignore_max_steps=args.ignore_max_steps)
+            train(
+                run,
+                config,
+                checkpoint=args.checkpoint,
+                ignore_max_steps=args.ignore_max_steps,
+            )
 
     # --- Mode 3: Single run ---
     else:

@@ -2,11 +2,11 @@ import argparse
 
 from oplas.models import Projector
 
-parser = argparse.ArgumentParser(prog='count_params')
+parser = argparse.ArgumentParser(prog="count_params")
 
-parser.add_argument('--inner', default='8', type=int)
-parser.add_argument('--hidden', default='8', type=int)
-parser.add_argument('--proj', default='64', type=int)
+parser.add_argument("--inner", default="8", type=int)
+parser.add_argument("--hidden", default="8", type=int)
+parser.add_argument("--proj", default="64", type=int)
 args = parser.parse_args()
 
 inner = args.inner
