@@ -11,8 +11,6 @@ def mix_stems(
     """
     here we actually mix inputs and encode them and embed them.
     """
-    # if debug:
-    #     breakpoint()
     if static_mix:  # use predefined mix channel, do nothing else
         g_stems = stems_in[:, 1:, :, :]  # cut off the first stem, the 'mix'
         g_mix = stems_in[:, 0, :, :]  # the mix is the first stem [B, T, C
@@ -23,31 +21,26 @@ def mix_stems(
     stems_full = stems_in[:, first_stem:, :, :]  # cut off the first stem, the 'mix'
     B, S, T, C = stems_full.shape  # batch, stems, time, channels
 
-    nmix = torch.randint(2, S, (1,)).item()  # number of stems to mix
+    # nmix is a mask for the tracks to get a nice spread of different stems
+    nmix = torch.randint(2, (B, S)).unsqueeze(-1).unsqueeze(-1).to(device)
 
     if debug:
-        print("nmix = ", nmix)
+        # print("nmix = ", nmix)
+        breakpoint()
 
-    # grab random stems
     stems = stems_full.to(device)  # put all the stems in a tensor
-    idxs = torch.randperm(S)[:nmix]
-    stems = stems[:, idxs]  # grab a random subset of the stems
 
-    gains = (
-        2 * torch.rand(nmix, device=stems.device) - 1
-    )  # random gains for each stem, [-1..1]
-    if debug:
-        print(f"{gains=}")
-    gains = gains.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)  # add batch and channel dims
+    # apply mask
+    stems = stems * nmix
+
+    # random gains for each stem [-1,1]
+    gains = torch.rand(B, S).unsqueeze(-1).unsqueeze(-1).to(device)
+    gains = 2 * gains - 1
+
     g_stems = stems * gains  # stems with random gains applied
 
-    g_mix = torch.zeros_like(g_stems[:, 0, :, :])
-    for i in range(
-        nmix
-    ):  # iterate through list of fadedstems, encode a bunch of stems at different fader settings
-        g_mix += g_stems[
-            :, i, :, :
-        ]  # make full mix in input space. "g" is there to note that we applied our own gains
+    g_mix = torch.sum(g_stems, 1)  # sum along stems dimension
+
     return {"g_stems": g_stems, "g_mix": g_mix}
 
 

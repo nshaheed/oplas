@@ -469,8 +469,13 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     val_dl = DataLoader(
         val_dataset, batch_size=config.batch_size, num_workers=4, pin_memory=True
     )
+
+    # for debugging on sh_dev
+    # train_dl = DataLoader(  # do 12 workers?
+    #     train_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+    # )
     # val_dl = DataLoader(
-    #     mtg_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+    #     val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
     # )
 
     # --- Training Loop ---
@@ -493,7 +498,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         # breakpoint()
 
         with torch.no_grad():
-            mixes = mix_and_encode(batch, encoder)
+            mixes = mix_and_encode(batch, encoder, debug=False)
             y_mix = mixes["y_mix"].to(torch.float32)
 
         # Vectorized projection logic (more efficient)
