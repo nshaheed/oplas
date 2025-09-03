@@ -11,6 +11,8 @@ def mix_stems(
     """
     here we actually mix inputs and encode them and embed them.
     """
+    # if debug:
+    #     breakpoint()
     if static_mix:  # use predefined mix channel, do nothing else
         g_stems = stems_in[:, 1:, :, :]  # cut off the first stem, the 'mix'
         g_mix = stems_in[:, 0, :, :]  # the mix is the first stem [B, T, C
@@ -22,6 +24,7 @@ def mix_stems(
     B, S, T, C = stems_full.shape  # batch, stems, time, channels
 
     nmix = torch.randint(2, S, (1,)).item()  # number of stems to mix
+
     if debug:
         print("nmix = ", nmix)
 
@@ -33,6 +36,8 @@ def mix_stems(
     gains = (
         2 * torch.rand(nmix, device=stems.device) - 1
     )  # random gains for each stem, [-1..1]
+    if debug:
+        print(f"{gains=}")
     gains = gains.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)  # add batch and channel dims
     g_stems = stems * gains  # stems with random gains applied
 
@@ -84,7 +89,7 @@ def mix_and_encode(stems_full, encoder, debug=False):
     """
     This performs the mixing AND the calling of the encoder (assuming it exists)
     """
-    m = mix_stems(stems_full, debug=debug)
+    m = mix_stems(stems_full, static_mix=False, debug=debug)
     ys = []  # TODO: could make ys a tensor instead of list, for consistency with other variables
     for i in range(m["g_stems"].shape[1]):
         with torch.no_grad():

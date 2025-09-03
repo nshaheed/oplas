@@ -10,11 +10,135 @@ import sys
 import numpy as np
 import stempeg
 import torch
-from torch.utils.data import Dataset, IterableDataset
+import torchaudio
+from torch.utils.data import Dataset, IterableDataset, ChainDataset
 from tqdm import tqdm, trange
 
 # from tqdm.contrib.concurrent import process_map # doesn't work great w/ jupyter
 from tqdm.contrib.concurrent import process_map
+
+
+class RandomMixDataset(IterableDataset):
+    def __init__(self, datasets, probs=None):
+        super().__init__()
+        self.datasets = datasets
+        self.probs = probs or [1.0 / len(datasets)] * len(datasets)
+
+    def __iter__(self):
+        # Create iterators for each dataset
+        iters = [iter(ds) for ds in self.datasets]
+
+        while iters:
+            # Pick one dataset according to probs
+            choice = random.choices(range(len(iters)), weights=self.probs, k=1)[0]
+            try:
+                yield next(iters[choice])
+            except StopIteration:
+                # Remove exhausted iterator
+                del iters[choice]
+                del self.probs[choice]
+                if self.probs:
+                    # Renormalize probs
+                    total = sum(self.probs)
+                    self.probs = [p / total for p in self.probs]
+
+
+class MTGJamendoStream(IterableDataset):
+    def __init__(
+        self,
+        data_dir="/scratch/users/nshaheed/mtg-jamendo",
+        chunk_size=2**18,
+        sample_rate=44100,
+        max_num_stems=5,
+        debug=False,
+    ):
+        self.songs_listed = sorted(glob(f"{data_dir}/*/*.mp3"))
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+        self.debug = debug
+        self.max_num_stems = max_num_stems
+
+        # Precompute song lengths in samples
+        # self.song_lengths = []
+        # for song_path in self.songs_listed:
+        #     info = stempeg.Info(song_path)
+        #     duration_sec = info.duration(0)
+        #     num_samples = int(duration_sec * info.sample_rate(0))
+        #     self.song_lengths.append(num_samples)
+
+    def __iter__(self):
+        if self.debug is True:
+            print(f"{len(self.songs_listed)=}")
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            # Single-process data loading
+            seed = random.randint(0, 2**32 - 1)
+        else:
+            # Unique seed per worker
+            seed = worker_info.seed
+
+        np.random.seed(seed % (2**32 - 1))
+        torch.manual_seed(seed)
+        rng = random.Random(seed)
+
+        while True:  # infitie stream of da music
+            stems = []
+            chunk_size_dur = self.chunk_size / self.sample_rate
+
+            # get random # of stems
+            # max_stems = random.randrange(1,self.max_num_stems)+1
+            max_stems = self.max_num_stems
+
+            while len(stems) < max_stems:
+                song_idx = rng.randint(0, len(self.songs_listed) - 1)
+                song_path = self.songs_listed[song_idx]
+
+                info = torchaudio.info(song_path)
+                file_sr = info.sample_rate
+                file_frames = info.num_frames
+                file_dur = file_frames / file_sr
+
+                if file_dur <= chunk_size_dur:
+                    continue  # skip too-short songs
+
+                # add an extra second to avoid getting errors with resampling
+                # yes this is a hack
+                chunk_size_file = int(chunk_size_dur * file_sr) + file_sr
+                # Pick a random start position in seconds
+                start_frame = rng.randint(0, file_frames - chunk_size_file)
+
+                waveform, sr = torchaudio.load(
+                    song_path,
+                    frame_offset=start_frame,
+                    num_frames=chunk_size_file,
+                    channels_first=False,
+                )
+
+                # waveform = waveform[0] # get first channel
+                if sr != self.sample_rate:
+                    resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
+                    waveform = resampler(waveform)
+
+                waveform = waveform[
+                    : self.chunk_size, :
+                ]  # a hack to handle oddly shaped data sizes
+
+                if waveform.shape[1] == 1:
+                    waveform = waveform.repeat(1, 2)
+                    # breakpoint()
+
+                # scale audio
+                waveform = (1.0 / max_stems) * waveform
+                stems.append(waveform)
+
+            # for stem in stems:
+            #     if stem.shape != torch.Size([262144,2]):
+            #         print("NO")
+            stems_tensor = torch.stack(stems)
+
+            # if stems_tensor.shape != [max_stems, 262144,2]:
+            #     breakpoint()
+            yield stems_tensor
 
 
 class StemChunk(IterableDataset):
@@ -199,6 +323,8 @@ class StemChunkStream(IterableDataset):
             # Unique seed per worker
             seed = worker_info.seed
 
+        np.random.seed(seed % (2**32 - 1))
+        torch.manual_seed(seed)
         rng = random.Random(seed)
 
         while True:  # Infinite stream
@@ -216,21 +342,27 @@ class StemChunkStream(IterableDataset):
             duration_sec = self.chunk_size / self.sample_rate
 
             # Load only the requested chunk
-            data, _ = stempeg.read_stems(
-                song_path,
-                start=start_sec,
-                duration=duration_sec,
-                sample_rate=self.sample_rate,
-            )
+            try:
+                data, _ = stempeg.read_stems(
+                    song_path,
+                    start=start_sec,
+                    duration=duration_sec,
+                    sample_rate=self.sample_rate,
+                )
+            except Exception as e:
+                print(f"Worker {worker_info.id} failed on {song_path}: {e}")
+                raise
 
             # Convert to torch tensor
-            data = torch.tensor(data, dtype=torch.float32)
+            # data = torch.tensor(data, dtype=torch.float32)
+            data = torch.from_numpy(data).float()
 
             if self.debug:
                 print(
                     f"Loaded {song_path} [{start_sec:.2f}s -> {start_sec + duration_sec:.2f}s], shape={data.shape}"
                 )
 
+            # print(data.shape)
             yield data
 
 
@@ -607,20 +739,31 @@ def build_vggish_stemlike(data_dir="/data/05-03_VGGish_1min_Encodings"):
 if __name__ == "__main__":
     import sys
 
+    # test MTGJamendoStream
+    mtg = MTGJamendoStream()
+    stemcnk = StemChunkStream(data_dir="/scratch/users/nshaheed/musdb18")
+    chain = ChainDataset([mtg, stemcnk])
+
+    result = next(iter(mtg))
+    result_cnk = next(iter(stemcnk))
+    result1 = next(iter(chain))
+    result2 = next(iter(chain))
+    breakpoint()
+
     # only need to run the following once:
-    build_vggish_stemlike()
-    sys.exit(0)
+    # build_vggish_stemlike()
+    # sys.exit(0)
 
     # test the dataset
-    test_ds = EncodingsDataset(subset="test", preload=True, debug=False)
-    ds_iter = iter(test_ds)
-    songs = []
-    songs.append(next(ds_iter))
-    songs.append(next(ds_iter))
-    for s, song in enumerate(songs):
-        print(f"songs[{s}].shape = ", song.shape)
-        for i in range(song.shape[0]):
-            for j in range(song.shape[1]):
-                vec = song[i, j, :]
-                vec_norm = vec.norm()
-                print(f"song[{s}][{i},{j},:].norm() = {vec_norm:.3f}")
+    # test_ds = EncodingsDataset(subset="test", preload=True, debug=False)
+    # ds_iter = iter(test_ds)
+    # songs = []
+    # songs.append(next(ds_iter))
+    # songs.append(next(ds_iter))
+    # for s, song in enumerate(songs):
+    #     print(f"songs[{s}].shape = ", song.shape)
+    #     for i in range(song.shape[0]):
+    #         for j in range(song.shape[1]):
+    #             vec = song[i, j, :]
+    #             vec_norm = vec.norm()
+    #             print(f"song[{s}][{i},{j},:].norm() = {vec_norm:.3f}")
