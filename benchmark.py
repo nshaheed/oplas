@@ -4,10 +4,12 @@ from statistics import mean, stdev
 
 import torch
 
+from oplas.models import Projector
+
 parser = argparse.ArgumentParser(
     description="Run inference benchmarks on projector model."
 )
-parser.add_argument("checkpoint")
+# parser.add_argument("checkpoint")
 parser.add_argument(
     "-r",
     "--repetitions",
@@ -26,14 +28,25 @@ parser.add_argument(
 parser.add_argument(
     "-d", "--device", type=str, default="cpu", help="which device to run benchmark"
 )
+
+parser.add_argument('--inner', default='8', type=int)
+parser.add_argument('--hidden', default='8', type=int)
+parser.add_argument('--proj', default='64', type=int)
+
 args = parser.parse_args()
 
 device = torch.device(args.device)
-projector = torch.load(
-    args.checkpoint,
-    map_location=device,
-    weights_only=False,
-)
+# projector = torch.load(
+#     args.checkpoint,
+#     map_location=device,
+#     weights_only=False,
+# )
+
+
+proj = args.proj
+inner = args.inner
+hidden = args.hidden
+projector = Projector(64, proj, num_inner_layers=inner, hidden_dims_scale=hidden)
 
 
 # print(projector(input)[0].shape)
