@@ -582,7 +582,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
 
         # breakpoint()
         # augment with effects
-        batch = augment_effects(batch, sample_rate=44100)
+        if config.augment:
+            batch = augment_effects(batch, sample_rate=44100)
 
         with torch.no_grad():
             mixes = mix_and_encode(batch, encoder, debug=False)
@@ -715,7 +716,8 @@ def main():
         action=argparse.BooleanOptionalAction,
         help="ignore max step and train forever",
     )
-
+    parser.add_argument("--augment", action="store_true")
+    parser.set_defaults(augment=False)
     args = parser.parse_args()
 
     # --- Mode 1: Sweep run ---
@@ -760,6 +762,7 @@ def main():
             "val_every": args.val_every,
             "loss": args.loss,
             "scheduler": args.scheduler,
+            "augment": args.augment,
         }
         with wandb.init(config=config) as run:
             train(run, run.config, ignore_max_steps=args.ignore_max_steps)

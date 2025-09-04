@@ -37,6 +37,8 @@ parameters:
     value: 256
   scheduler:
     value: "cosine"
+  augment:
+    value: True
 
 
 # --- Static parameters can be defined here too ---
