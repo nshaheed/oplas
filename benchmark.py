@@ -29,9 +29,9 @@ parser.add_argument(
     "-d", "--device", type=str, default="cpu", help="which device to run benchmark"
 )
 
-parser.add_argument('--inner', default='8', type=int)
-parser.add_argument('--hidden', default='8', type=int)
-parser.add_argument('--proj', default='64', type=int)
+parser.add_argument("--inner", default="8", type=int)
+parser.add_argument("--hidden", default="8", type=int)
+parser.add_argument("--proj", default="64", type=int)
 
 args = parser.parse_args()
 
