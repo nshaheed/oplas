@@ -12,6 +12,20 @@ from torch.utils.data import DataLoader, ChainDataset
 from tqdm import tqdm
 import torch.multiprocessing as mp
 
+from torch_audiomentations import (
+    Compose,
+    AddColoredNoise,
+    AddBackgroundNoise,
+    ApplyImpulseResponse,
+    PitchShift,
+    PolarityInversion,
+    Gain,
+    BandPassFilter,
+    BandStopFilter,
+    HighPassFilter,
+    LowPassFilter,
+)
+
 import wandb
 
 # Assuming your custom modules are in the python path
@@ -64,6 +78,77 @@ def get_scheduler(opt, config):
         )
 
     return scheduler
+
+
+def augment_effects(
+    waveforms: torch.Tensor,
+    sample_rate: int = 44100,
+    use_noise: bool = True,
+) -> torch.Tensor:
+    """
+    Apply randomized augmentations to audio waveforms using torch-audiomentations.
+
+
+    Args:
+    waveforms (torch.Tensor): Input tensor of shape [batch_size, stems, time, channels]
+    sample_rate (int): Audio sample rate used for augmentations
+    use_noise (bool): Enable various noise augmentations
+
+
+    Returns:
+    torch.Tensor: Augmented tensor of the same shape
+    """
+    batch_size, stems, time, channels = waveforms.shape
+
+    # Rearrange into [batch*stems*channels, 1, time] for torch-audiomentations
+    waveforms_reshaped = (
+        waveforms.permute(0, 1, 3, 2).reshape(  # [batch, stems, channels, time]
+            -1, 1, time
+        )  # [batch*stems*channels, 1, time]
+    )
+
+    # Build augmentation pipeline
+    transforms = []
+
+    mode = "per_channel"
+    ot = "tensor"  # output type
+
+    if use_noise:
+        transforms.append(
+            AddColoredNoise(
+                min_snr_in_db=10, max_snr_in_db=30, p=0.5, mode=mode, output_type=ot
+            )
+        )
+        # transforms.append(AddBackgroundNoise(background_paths="./backgrounds", p=0.5))
+        # transforms.append(ApplyImpulseResponse(ir_paths="./impulse_responses", p=0.5))
+
+    transforms.extend(
+        [
+            PitchShift(
+                min_transpose_semitones=-2,
+                max_transpose_semitones=2,
+                sample_rate=sample_rate,
+                p=0.5,
+                mode=mode,
+                output_type=ot,
+            ),
+            PolarityInversion(p=0.3, mode=mode, output_type=ot),
+            BandPassFilter(p=0.3, mode=mode, output_type=ot),
+            BandStopFilter(p=0.3, mode=mode, output_type=ot),
+            HighPassFilter(p=0.3, mode=mode, output_type=ot),
+            LowPassFilter(p=0.3, mode=mode, output_type=ot),
+        ]
+    )
+
+    augment = Compose(transforms, output_type=ot)
+
+    # Apply augmentations
+    augmented = augment(waveforms_reshaped, sample_rate=sample_rate)
+
+    # Reshape back to [batch_size, stems, time, channels]
+    augmented = augmented.reshape(batch_size, stems, channels, time).permute(0, 1, 3, 2)
+
+    return augmented
 
 
 @torch.no_grad()
@@ -496,6 +581,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         opt.zero_grad()
 
         # breakpoint()
+        # augment with effects
+        batch = augment_effects(batch, sample_rate=44100)
 
         with torch.no_grad():
             mixes = mix_and_encode(batch, encoder, debug=False)

@@ -29,6 +29,7 @@ dependencies = [
   "vicregaddon>=0.0.4",
   "py-spy>=0.4.1",
   "scalene>=1.5.53",
+  "torch-audiomentations>=0.12.0",
 ]
 
 [build-system]
