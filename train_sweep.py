@@ -8,13 +8,14 @@ import os
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ChainDataset
 from tqdm import tqdm
+import torch.multiprocessing as mp
 
 import wandb
 
 # Assuming your custom modules are in the python path
-from oplas.data import StemChunk
+from oplas.data import StemChunk, StemChunkStream, MTGJamendoStream, RandomMixDataset
 from oplas.losses import vicreg_loss_fn, pseudo_huber
 from oplas.mixing import mix_and_encode
 from oplas.models import Music2Latent, Projector
@@ -43,14 +44,27 @@ def save_model(
     )
     return save_path
 
+
 def get_loss_fn(val):
     loss_fn = nn.MSELoss()
-    if val == 'mse':
+    if val == "mse":
         loss_fn = nn.MSELoss()
-    elif val == 'pseudo-huber':
+    elif val == "pseudo-huber":
         loss_fn = pseudo_huber
 
     return loss_fn
+
+
+def get_scheduler(opt, config):
+    scheduler = None
+
+    if config.scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=config.max_steps
+        )
+
+    return scheduler
+
 
 @torch.no_grad()
 def validate_old_old(projector, device, val_dl, encoder, config, batch):
@@ -282,10 +296,10 @@ def validate(projector, device, val_dl, encoder, config):
         batch = next(vbatch_iter).to(device)
     except StopIteration:
         print("Validation dataloader is empty.")
-        return {};
+        return {}
 
     # --- Your validation logic remains the same ---
-    mixes = mix_and_encode(batch, encoder)
+    mixes = mix_and_encode(batch, encoder, debug=False)
     y_mix = mixes["y_mix"]
     z_sum = None
 
@@ -299,7 +313,7 @@ def validate(projector, device, val_dl, encoder, config):
     z_stems, y_hats = projector(ys_permuted)
 
     z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
-    y_sum = projector.decode(z_sum).permute(0,2,1)
+    y_sum = projector.decode(z_sum).permute(0, 2, 1)
     z_sum = z_sum.permute(0, 2, 1).contiguous()
     y_hats = y_hats.permute(0, 1, 3, 2)
 
@@ -326,7 +340,10 @@ def validate(projector, device, val_dl, encoder, config):
         "val/y_loss": y_loss.detach(),
         "val/y_mix_loss": y_mix_loss.detach(),
         "val/sum_loss": sum_loss.detach(),
-        "val/recon_loss": y_mix_loss.item() + y_loss.item() + inv_loss.item() + sum_loss.item(),
+        "val/recon_loss": y_mix_loss.item()
+        + y_loss.item()
+        + inv_loss.item()
+        + sum_loss.item(),
     }
 
     # actually generate some audio examples
@@ -342,7 +359,10 @@ def validate(projector, device, val_dl, encoder, config):
             sample_rate=44100,
         ),
         "val/0/orig": wandb.Audio(
-            batch[0, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+            mixes["g_mix"][0, :, 0].cpu(),
+            # batch[0, 0, :, 0].cpu(),
+            caption="original mix",
+            sample_rate=44100,
         ),
         "val/1/z_mix": wandb.Audio(
             audio[1],
@@ -350,7 +370,10 @@ def validate(projector, device, val_dl, encoder, config):
             sample_rate=44100,
         ),
         "val/1/orig": wandb.Audio(
-            batch[1, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+            mixes["g_mix"][1, :, 0].cpu(),
+            # batch[1, 0, :, 0].cpu(),
+            caption="original mix",
+            sample_rate=44100,
         ),
         "val/2/z_mix": wandb.Audio(
             audio[2],
@@ -358,7 +381,10 @@ def validate(projector, device, val_dl, encoder, config):
             sample_rate=44100,
         ),
         "val/2/orig": wandb.Audio(
-            batch[2, 0, :, 0].cpu(), caption="original mix", sample_rate=44100
+            mixes["g_mix"][2, :, 0].cpu(),
+            # batch[2, 0, :, 0].cpu(),
+            caption="original mix",
+            sample_rate=44100,
         ),
     }
 
@@ -381,7 +407,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     # config.hidden_dims_scale = 1
 
     # handle old models where this wasn't a variable
-    out_dims = config.projector_dims if 'projector_dims' in config else 64
+    out_dims = config.projector_dims if "projector_dims" in config else 64
 
     # --- Model, Optimizer, Scheduler ---
     projector = Projector(
@@ -393,12 +419,17 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
-    opt = torch.optim.Adam(projector.parameters(), lr=config.learning_rate)
+    opt = torch.optim.Adam(
+        projector.parameters(),
+        lr=config.learning_rate,
+        betas=(config.adams_beta1, 0.999),
+        eps=config.adams_epsilon,
+    )
     # TODO use fixed learning rate for now
     # scheduler = torch.optim.lr_scheduler.OneCycleLR(
     #     opt, max_lr=config.learning_rate, total_steps=config.max_steps
     # )
-    scheduler = None
+    scheduler = get_scheduler(opt, config)
 
     loss_fn = get_loss_fn(config.loss)
 
@@ -425,16 +456,27 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             print(f"Could not resume. Starting from scratch. Error: {e}")
 
     # --- Data Loading ---
-    train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
-    val_dataset = StemChunk(
+    # train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
+    stems_dataset = StemChunkStream(data_dir=config.data_dir)
+    mtg_dataset = MTGJamendoStream()
+    train_dataset = RandomMixDataset([stems_dataset, mtg_dataset])
+    val_dataset = StemChunkStream(
         data_dir=config.data_dir, subset="test", load_frac=config.load_frac
     )
-    train_dl = DataLoader(
-        train_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+    train_dl = DataLoader(  # do 12 workers?
+        train_dataset, batch_size=config.batch_size, num_workers=12, pin_memory=True
     )
     val_dl = DataLoader(
-        val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+        val_dataset, batch_size=config.batch_size, num_workers=4, pin_memory=True
     )
+
+    # for debugging on sh_dev
+    # train_dl = DataLoader(  # do 12 workers?
+    #     train_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+    # )
+    # val_dl = DataLoader(
+    #     val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+    # )
 
     # --- Training Loop ---
     projector.train()
@@ -453,8 +495,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         batch = batch.to(device)
         opt.zero_grad()
 
+        # breakpoint()
+
         with torch.no_grad():
-            mixes = mix_and_encode(batch, encoder)
+            mixes = mix_and_encode(batch, encoder, debug=False)
             y_mix = mixes["y_mix"].to(torch.float32)
 
         # Vectorized projection logic (more efficient)
@@ -470,7 +514,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         z_sum = torch.sum(z_stems, dim=1)
-        y_sum = projector.decode(z_sum).permute(0,2,1)
+        y_sum = projector.decode(z_sum).permute(0, 2, 1)
         z_sum = z_sum.permute(0, 2, 1).contiguous()
         y_hats = y_hats.permute(0, 1, 3, 2)
 
@@ -502,8 +546,14 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             "train/y_loss": y_loss.item(),
             "train/y_mix_loss": y_mix_loss.item(),
             "train/sum_loss": sum_loss.detach(),
-            "train/recon_loss": y_mix_loss.item() + y_loss.item() + inv_loss.item() + sum_loss.item(),
+            "train/recon_loss": y_mix_loss.item()
+            + y_loss.item()
+            + inv_loss.item()
+            + sum_loss.item(),
         }
+
+        if scheduler:
+            log_dict = log_dict | {"train/learning_rate": scheduler.get_last_lr()[0]}
 
         if step % config.val_every == 0:
             val_log = validate(projector, device, val_dl, encoder, config)
@@ -545,7 +595,9 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-3)
     parser.add_argument("--num_inner_layers", type=int, default=6)
     parser.add_argument("--hidden_dims_scale", type=int, default=6)
-    parser.add_argument("--projector_dims", type=int, default=64, help="num of dims in projection space")
+    parser.add_argument(
+        "--projector_dims", type=int, default=64, help="num of dims in projection space"
+    )
 
     parser.add_argument("--var_coeff", type=float, default=1.0)
     parser.add_argument("--inv_coeff", type=float, default=1.0)
@@ -560,8 +612,22 @@ def main():
     parser.add_argument("--load_frac", type=float, default=1.0)
     parser.add_argument("--checkpoint_every", type=int, default=400)
     parser.add_argument("--val_every", type=int, default=200)
-    parser.add_argument("--loss", type=str, default="mse", help="which loss function to use [mse,pseudo-huber]")    
-    parser.add_argument("--ignore_max_steps", action=argparse.BooleanOptionalAction, help="ignore max step and train forever")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="mse",
+        help="which loss function to use [mse,pseudo-huber]",
+    )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        help="which loss scheudler to use [None,cosine]",
+    )
+    parser.add_argument(
+        "--ignore_max_steps",
+        action=argparse.BooleanOptionalAction,
+        help="ignore max step and train forever",
+    )
 
     args = parser.parse_args()
 
@@ -580,12 +646,19 @@ def main():
         project = "oplas"
         with wandb.init(project=project, id=args.resume_run_id, resume="must") as run:
             config = run.config  # restore config from original run
-            train(run, config, checkpoint=args.checkpoint, ignore_max_steps=args.ignore_max_steps)
+            train(
+                run,
+                config,
+                checkpoint=args.checkpoint,
+                ignore_max_steps=args.ignore_max_steps,
+            )
 
     # --- Mode 3: Single run ---
     else:
         config = {
             "learning_rate": args.learning_rate,
+            "adams_beta1": 0.9,
+            "adams_epsilon": 1e-8,
             "num_inner_layers": args.num_inner_layers,
             "hidden_dims_scale": args.hidden_dims_scale,
             "projector_dims": args.projector_dims,
@@ -599,6 +672,7 @@ def main():
             "checkpoint_every": args.checkpoint_every,
             "val_every": args.val_every,
             "loss": args.loss,
+            "scheduler": args.scheduler,
         }
         with wandb.init(config=config) as run:
             train(run, run.config, ignore_max_steps=args.ignore_max_steps)
@@ -617,4 +691,6 @@ if __name__ == "__main__":
 
     # wandb.agent(args.sweep_id, function=train, count=1)
     # train(args)
+    mp.set_start_method("spawn", force=True)
+
     main()

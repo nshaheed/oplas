@@ -4,13 +4,25 @@ method: random
 metric:
   name: val/recon_loss
   goal: minimize
+early_terminate:
+  type: hyperband
+  min_iter: 400
+  eta: 2
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: 1.0e-6
-    max: 1.0e-2
+    min: 5.0e-5
+    max: 8.0e-3
+  adams_beta1:
+    distribution: log_uniform_values
+    min: 0.8
+    max: 0.9
+  adams_epsilon:
+    distribution: log_uniform_values
+    min: 5.0e-9
+    max: 1.0e-7
   num_inner_layers:
-    value: 4
+    value: 1
   hidden_dims_scale:
     value: 8
   var_coeff:
@@ -22,19 +34,21 @@ parameters:
   loss:
     value: "pseudo-huber"
   projector_dims:
-    values: [64, 128]
+    value: 256
+  scheduler:
+    value: "cosine"
 
 
 # --- Static parameters can be defined here too ---
 # --- These will be included in wandb.config for every run ---
   max_steps:
-    value: 8001
+    value: 40001
   load_frac:
     value: 1.0 # Use 0.01 for quick test runs
   checkpoint_every:
     value: 400
   val_every:
-    value: 200
+    value: 100
   batch_size:
     value: 32
   data_dir:
