@@ -122,6 +122,77 @@ class Projector(nn.Module):
         return z, y_hat  # encoder output,  decoder output
 
 
+class ProjectorVAE(nn.Module):
+    """
+    Main Projector model as a VAE. Patterned after VICReg's simple
+    MLP and https://github.com/pytorch/examples/blob/main/vae/main.py
+
+    """
+
+    def __init__(
+        self,
+        in_dims=128,
+        out_dims=128,
+        hidden_dims_scale=4,
+        num_inner_layers=6,
+        act=nn.GELU(),
+        use_bn=False,  # bn is bad for regression model
+        resid=True,
+        block=EmbedBlock,  # Linear layer with optional activation & optional BatchNorm
+        trivial=False,  # ignore everything and make this an identity mapping
+    ):
+        super().__init__()
+        self.resid, self.trivial = resid, trivial
+        self.in_dims, self.out_dims = in_dims, out_dims
+        hidden_dims = hidden_dims_scale * in_dims
+        # resid=False # turn it off for inner layers, just leave outer resid
+
+        # if using resid, only apply to the innermost block when the dims fit
+        self.encoder = nn.Sequential(
+            block(in_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid),
+            *[
+                block(hidden_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid)
+                for _ in range(num_inner_layers)
+            ],
+        )
+
+        self.mean_layer = block(
+            hidden_dims, out_dims, act=None, use_bn=use_bn, resid=resid, bias=False
+        )
+        self.var_layer = block(
+            hidden_dims, out_dims, act=None, use_bn=use_bn, resid=resid, bias=False
+        )
+
+        self.decoder = nn.Sequential(  # same as encoder, in fact.
+            block(out_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid),
+            *[
+                block(hidden_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid)
+                for _ in range(num_inner_layers)
+            ],
+            block(hidden_dims, in_dims, act=None, use_bn=use_bn, resid=resid),
+        )
+
+    def encode(self, y):
+        h = self.encoder(y)
+
+        return self.mean_layer(h), self.var_layer(h)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z):
+        return self.decoder(z)
+
+    def forward(self, y):
+        mu, logvar = self.encode(y)
+        z = self.reparameterize(mu, logvar)
+        y_hat = self.decode(z)
+
+        return z, y_hat, mu, logvar
+
+
 # -- Now a list of "given models" i.e. pretrained encoders (CLAP, Vggish, etc)
 
 

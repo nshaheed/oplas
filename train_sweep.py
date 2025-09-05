@@ -32,7 +32,7 @@ import wandb
 from oplas.data import StemChunk, StemChunkStream, MTGJamendoStream, RandomMixDataset
 from oplas.losses import vicreg_loss_fn, pseudo_huber
 from oplas.mixing import mix_and_encode
-from oplas.models import Music2Latent, Projector
+from oplas.models import Music2Latent, Projector, ProjectorVAE
 
 
 # Best practice: define functions at the top level
@@ -388,14 +388,14 @@ def validate(projector, device, val_dl, encoder, config):
     y_mix = mixes["y_mix"]
     z_sum = None
 
-    z_mix, y_hat_mix = projector(y_mix.permute(0, 2, 1))
+    z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
     z_mix = z_mix.permute(0, 2, 1)
     y_hat_mix = y_hat_mix.permute(0, 2, 1)
 
     ys_tensor = torch.stack(mixes["ys"], dim=1).to(torch.float32)
     B, S, D, T = ys_tensor.shape
     ys_permuted = ys_tensor.permute(0, 1, 3, 2)
-    z_stems, y_hats = projector(ys_permuted)
+    z_stems, y_hats, *params = projector(ys_permuted)
 
     z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
     y_sum = projector.decode(z_sum).permute(0, 2, 1)
@@ -407,6 +407,11 @@ def validate(projector, device, val_dl, encoder, config):
     y_loss = loss_fn(ys_tensor, y_hats)
     y_mix_loss = loss_fn(y_mix, y_hat_mix)
     sum_loss = loss_fn(y_mix, y_sum)
+
+    kld_loss = 0
+    if config.arch == "vae":
+        mu, logvar = params
+        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
 
     var_loss = config.var_coeff * vicreg_loss["var_loss"]
     # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
@@ -425,6 +430,7 @@ def validate(projector, device, val_dl, encoder, config):
         "val/y_loss": y_loss.detach(),
         "val/y_mix_loss": y_mix_loss.detach(),
         "val/sum_loss": sum_loss.detach(),
+        "train/kld_loss": kld_loss.item(),
         "val/recon_loss": y_mix_loss.item()
         + y_loss.item()
         + inv_loss.item()
@@ -495,12 +501,22 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     out_dims = config.projector_dims if "projector_dims" in config else 64
 
     # --- Model, Optimizer, Scheduler ---
-    projector = Projector(
-        in_dims=64,
-        out_dims=out_dims,
-        num_inner_layers=config.num_inner_layers,
-        hidden_dims_scale=config.hidden_dims_scale,
-    ).to(device)
+    projector = None
+
+    if config.arch == "vae":
+        projector = ProjectorVAE(
+            in_dims=64,
+            out_dims=out_dims,
+            num_inner_layers=config.num_inner_layers,
+            hidden_dims_scale=config.hidden_dims_scale,
+        ).to(device)
+    else:
+        projector = Projector(
+            in_dims=64,
+            out_dims=out_dims,
+            num_inner_layers=config.num_inner_layers,
+            hidden_dims_scale=config.hidden_dims_scale,
+        ).to(device)
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
@@ -555,9 +571,9 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         val_dataset, batch_size=config.batch_size, num_workers=4, pin_memory=True
     )
 
-    # for debugging on sh_dev
+    # # for debugging on sh_dev
     # train_dl = DataLoader(  # do 12 workers?
-    #     train_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+    #     stems_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
     # )
     # val_dl = DataLoader(
     #     val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
@@ -590,7 +606,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             y_mix = mixes["y_mix"].to(torch.float32)
 
         # Vectorized projection logic (more efficient)
-        z_mix, y_hat_mix = projector(y_mix.permute(0, 2, 1))
+        z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
         z_mix = z_mix.permute(0, 2, 1)
         y_hat_mix = y_hat_mix.permute(0, 2, 1)
 
@@ -598,7 +614,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         ys_tensor = torch.stack(mixes["ys"], dim=1).to(torch.float32)
         B, S, D, T = ys_tensor.shape
         ys_permuted = ys_tensor.permute(0, 1, 3, 2)
-        z_stems, y_hats = projector(ys_permuted)
+        z_stems, y_hats, *params = projector(ys_permuted)
         # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
         z_sum = torch.sum(z_stems, dim=1)
@@ -612,12 +628,19 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         y_mix_loss = loss_fn(y_mix, y_hat_mix)
         sum_loss = loss_fn(y_mix, y_sum)
 
+        kld_loss = 0
+        if config.arch == "vae":
+            mu, logvar = params
+            kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+
         var_loss = config.var_coeff * vicreg_loss["var_loss"]
         # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
         inv_loss = loss_fn(z_mix, z_sum)
         cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
 
-        loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss
+        loss = (
+            var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss + kld_loss
+        )
 
         loss.backward()
         opt.step()
@@ -634,6 +657,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             "train/y_loss": y_loss.item(),
             "train/y_mix_loss": y_mix_loss.item(),
             "train/sum_loss": sum_loss.detach(),
+            "train/kld_loss": kld_loss.item(),
             "train/recon_loss": y_mix_loss.item()
             + y_loss.item()
             + inv_loss.item()
@@ -716,6 +740,7 @@ def main():
         action=argparse.BooleanOptionalAction,
         help="ignore max step and train forever",
     )
+    parser.add_argument("--arch", type=str, help="use 'vae' or autoencoder(default)")
     parser.add_argument("--augment", action="store_true")
     parser.set_defaults(augment=False)
     args = parser.parse_args()
@@ -763,6 +788,7 @@ def main():
             "loss": args.loss,
             "scheduler": args.scheduler,
             "augment": args.augment,
+            "arch": args.arch,
         }
         with wandb.init(config=config) as run:
             train(run, run.config, ignore_max_steps=args.ignore_max_steps)
