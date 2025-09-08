@@ -562,7 +562,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         #     hidden_dims_scale=config.hidden_dims_scale,
         # ).to(device)
 
-        projector = VAE(in_dims=64, out_dims=out_dims).to(device)
+        projector = VAE(in_dims=64, out_dims=out_dims, trivial=False).to(device)
     else:
         projector = Projector(
             in_dims=64,
@@ -654,7 +654,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         # batch = torch.rand_like(batch)
         opt.zero_grad()
 
-        # breakpoint()
         # augment with effects
         if config.augment:
             batch = augment_effects(batch, sample_rate=44100)

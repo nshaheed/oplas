@@ -124,32 +124,47 @@ class Projector(nn.Module):
 
 
 class VAE(nn.Module):
-    def __init__(self, in_dims, out_dims, hidden_dims=800):
+    def __init__(self, in_dims, out_dims, hidden_dims=800, trivial=False):
         super(VAE, self).__init__()
         self.in_dims, self.out_dims, self.hidden_dims = in_dims, out_dims, hidden_dims
+        self.trivial = trivial
 
-        self.fc1 = nn.Linear(in_dims, hidden_dims)
-        self.fc1a = nn.Linear(hidden_dims, hidden_dims)
-        self.fc21 = nn.Linear(hidden_dims, out_dims)
-        self.fc22 = nn.Linear(hidden_dims, out_dims)
-        self.fc3 = nn.Linear(out_dims, hidden_dims)
-        self.fc3a = nn.Linear(hidden_dims, hidden_dims)
-        self.fc4 = nn.Linear(hidden_dims, in_dims)
+        self.encoder = nn.Sequential(
+            nn.Linear(in_dims, hidden_dims),
+            nn.ReLU(),
+            nn.Linear(hidden_dims, hidden_dims),
+            nn.ReLU(),
+        )
+        self.mean = nn.Linear(hidden_dims, out_dims)
+        self.std = nn.Linear(hidden_dims, out_dims)
+
+        self.decoder = nn.Sequential(
+            nn.Linear(out_dims, hidden_dims),
+            nn.ReLU(),
+            nn.Linear(hidden_dims, hidden_dims),
+            nn.ReLU(),
+            nn.Linear(hidden_dims, in_dims),
+        )
 
     def encode(self, x):
-        h1 = F.relu(self.fc1(x))
-        h2 = F.relu(self.fc1a(h1))
-        return self.fc21(h2), self.fc22(h2)
+        if self.trivial:
+            return x, torch.zeros_like(x)
+
+        h = self.encoder(x)
+        return self.mean(h), self.std(h)
 
     def reparameterize(self, mu, logvar):
+        if self.trivial:
+            return mu
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
 
     def decode(self, z):
-        h3 = F.relu(self.fc3(z))
-        h4 = F.relu(self.fc3a(h3))
-        return torch.sigmoid(self.fc4(h4))
+        if self.trivial:
+            return z
+
+        return self.decoder(z)
 
     def forward(self, x):
         # mu, logvar = self.encode(x.view(-1, 784))
