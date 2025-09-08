@@ -50,9 +50,16 @@ class MTGJamendoStream(IterableDataset):
         chunk_size=2**18,
         sample_rate=44100,
         max_num_stems=5,
+        load_frac=1.0,
         debug=False,
     ):
         self.songs_listed = sorted(glob(f"{data_dir}/*/*.mp3"))
+
+        if load_frac < 1.0:
+            keep_n = int(len(self.songs_listed) * load_frac)
+            keep_n = max(keep_n, 1)
+            self.songs_listed = random.sample(self.songs_listed, keep_n)
+
         self.chunk_size = chunk_size
         self.sample_rate = sample_rate
         self.debug = debug
@@ -166,6 +173,7 @@ class StemChunk(IterableDataset):
         self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
         if load_frac < 1.0:
             keep_n = max(1, int(len(self.songs_listed) * load_frac))
+            keep_n = max(keep_n, 1)
             self.songs_listed = random.sample(self.songs_listed, keep_n)
 
         self.chunk_size = chunk_size
@@ -291,6 +299,7 @@ class StemChunkStream(IterableDataset):
         self.songs_listed = sorted(glob(f"{search_dir}/*.mp4"))
         if load_frac < 1.0:
             keep_n = int(len(self.songs_listed) * load_frac)
+            keep_n = max(keep_n, 1)
             self.songs_listed = random.sample(self.songs_listed, keep_n)
 
         self.chunk_size = chunk_size

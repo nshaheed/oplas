@@ -4,6 +4,7 @@ import argparse
 from itertools import islice
 from pathlib import Path
 import os
+import math
 
 import numpy as np
 import torch
@@ -32,7 +33,7 @@ import wandb
 from oplas.data import StemChunk, StemChunkStream, MTGJamendoStream, RandomMixDataset
 from oplas.losses import vicreg_loss_fn, pseudo_huber
 from oplas.mixing import mix_and_encode
-from oplas.models import Music2Latent, Projector, ProjectorVAE
+from oplas.models import Music2Latent, Projector, ProjectorVAE, VAE
 
 
 # Best practice: define functions at the top level
@@ -78,6 +79,54 @@ def get_scheduler(opt, config):
         )
 
     return scheduler
+
+
+def sigmoid(x):
+    return 1 / (1 + math.exp(-x))
+
+
+def kld(mu, logvar, step, warmup=None):
+    # return torch.tensor(0)
+    # print(mu)
+    # print(logvar)
+
+    mu_mean = mu.mean().item()
+    mu_std = mu.std().item()
+    logvar_mean = logvar.mean().item()
+    logvar_std = logvar.std().item()
+
+    print(
+        f"mu: mean={mu_mean:.4f}, std={mu_std:.4f} | "
+        f"logvar: mean={logvar_mean:.4f}, std={logvar_std:.4f}"
+    )
+
+    # kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    # kld_element = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # kld_loss = torch.mean(torch.sum(kld_element, dim=1))
+
+    # print(f'{mu.shape=}')
+    # breakpoint()
+
+    # mu, logvar: [batch, 4, 63, 16]
+    kld_element = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # sum over latent dim (last one)
+    kld_per_loc = torch.sum(kld_element, dim=-1)  # [batch, 4, 63]
+    # mean over all locations per sample
+    kld_per_sample = torch.mean(kld_per_loc, dim=(1, 2))  # [batch]
+    # mean across batch
+    return torch.mean(kld_per_sample)
+
+    # perform kld annealing by scaling the kld over the course of a warmup peroid
+    beta = 1
+    if warmup is not None:
+        # breakpoint()
+        x = float(step) / float(warmup)
+        beta = 3 * x**2 - 2 * x**3  # smoothstep
+        beta = min(beta, 1.0)  # clamping
+
+    # print(f'kld pre-beta: {kld_loss}, {warmup=}, {beta=}, {step=}')
+
+    return beta * kld_loss
 
 
 def augment_effects(
@@ -373,7 +422,7 @@ def validate_old_old(projector, device, val_dl, encoder, config, batch):
 
 
 @torch.no_grad()
-def validate(projector, device, val_dl, encoder, config):
+def validate(projector, device, val_dl, encoder, config, step=None):
     """Validation function, slightly simplified for clarity."""
     projector.eval()  # Set model to evaluation mode
     vbatch_iter = iter(val_dl)
@@ -385,7 +434,7 @@ def validate(projector, device, val_dl, encoder, config):
 
     # --- Your validation logic remains the same ---
     mixes = mix_and_encode(batch, encoder, debug=False)
-    y_mix = mixes["y_mix"]
+    y_mix = mixes["y_mix"].float()
     z_sum = None
 
     z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
@@ -411,14 +460,14 @@ def validate(projector, device, val_dl, encoder, config):
     kld_loss = 0
     if config.arch == "vae":
         mu, logvar = params
-        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        kld_loss = kld(mu, logvar, step, config.kld_warmup)
 
     var_loss = config.var_coeff * vicreg_loss["var_loss"]
     # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
     inv_loss = loss_fn(z_mix, z_sum)
     cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
 
-    loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss
+    loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss + kld_loss
 
     # testing z_sum back to y_sum
 
@@ -430,12 +479,14 @@ def validate(projector, device, val_dl, encoder, config):
         "val/y_loss": y_loss.detach(),
         "val/y_mix_loss": y_mix_loss.detach(),
         "val/sum_loss": sum_loss.detach(),
-        "train/kld_loss": kld_loss.item(),
         "val/recon_loss": y_mix_loss.item()
         + y_loss.item()
         + inv_loss.item()
         + sum_loss.item(),
     }
+
+    if config.arch == "vae":
+        log = log | {"val/kld_loss": kld_loss.item()}
 
     # actually generate some audio examples
     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
@@ -483,7 +534,7 @@ def validate(projector, device, val_dl, encoder, config):
     return log
 
 
-def train(run, config, checkpoint=None, ignore_max_steps=False):
+def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     """Main training function wrapped for W&B sweeps."""
     # Initialize a new wandb run
     # run = wandb.init()
@@ -504,12 +555,14 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
     projector = None
 
     if config.arch == "vae":
-        projector = ProjectorVAE(
-            in_dims=64,
-            out_dims=out_dims,
-            num_inner_layers=config.num_inner_layers,
-            hidden_dims_scale=config.hidden_dims_scale,
-        ).to(device)
+        # projector = ProjectorVAE(
+        #     in_dims=64,
+        #     out_dims=out_dims,
+        #     num_inner_layers=config.num_inner_layers,
+        #     hidden_dims_scale=config.hidden_dims_scale,
+        # ).to(device)
+
+        projector = VAE(in_dims=64, out_dims=out_dims).to(device)
     else:
         projector = Projector(
             in_dims=64,
@@ -558,26 +611,30 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
 
     # --- Data Loading ---
     # train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
-    stems_dataset = StemChunkStream(data_dir=config.data_dir)
+    stems_dataset = StemChunkStream(
+        data_dir=config.data_dir, load_frac=config.load_frac
+    )
     mtg_dataset = MTGJamendoStream()
     train_dataset = RandomMixDataset([stems_dataset, mtg_dataset])
     val_dataset = StemChunkStream(
         data_dir=config.data_dir, subset="test", load_frac=config.load_frac
     )
-    train_dl = DataLoader(  # do 12 workers?
-        train_dataset, batch_size=config.batch_size, num_workers=12, pin_memory=True
-    )
-    val_dl = DataLoader(
-        val_dataset, batch_size=config.batch_size, num_workers=4, pin_memory=True
-    )
 
-    # # for debugging on sh_dev
-    # train_dl = DataLoader(  # do 12 workers?
-    #     stems_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
-    # )
-    # val_dl = DataLoader(
-    #     val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
-    # )
+    if test:
+        # for debugging on sh_dev
+        train_dl = DataLoader(  # do 12 workers?
+            stems_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+        )
+        val_dl = DataLoader(
+            val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+        )
+    else:
+        train_dl = DataLoader(  # do 12 workers?
+            train_dataset, batch_size=config.batch_size, num_workers=8, pin_memory=True
+        )
+        val_dl = DataLoader(
+            val_dataset, batch_size=config.batch_size, num_workers=4, pin_memory=True
+        )
 
     # --- Training Loop ---
     projector.train()
@@ -594,6 +651,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         if step >= config.max_steps and not ignore_max_steps:
             break
         batch = batch.to(device)
+        # batch = torch.rand_like(batch)
         opt.zero_grad()
 
         # breakpoint()
@@ -628,10 +686,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
         y_mix_loss = loss_fn(y_mix, y_hat_mix)
         sum_loss = loss_fn(y_mix, y_sum)
 
-        kld_loss = 0
+        kld_loss = torch.tensor(0)
         if config.arch == "vae":
             mu, logvar = params
-            kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+            kld_loss = kld(mu, logvar, step, config.kld_warmup)
 
         var_loss = config.var_coeff * vicreg_loss["var_loss"]
         # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
@@ -648,7 +706,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             scheduler.step()
 
         # --- Logging ---
-        tbatch.set_postfix(loss=loss.item(), inv_loss=inv_loss.item())
+        tbatch.set_postfix(loss=loss.item(), sum_loss=sum_loss.item())
         log_dict = {
             "train/loss": loss.item(),
             "train/var_loss": var_loss.item(),
@@ -657,18 +715,60 @@ def train(run, config, checkpoint=None, ignore_max_steps=False):
             "train/y_loss": y_loss.item(),
             "train/y_mix_loss": y_mix_loss.item(),
             "train/sum_loss": sum_loss.detach(),
-            "train/kld_loss": kld_loss.item(),
             "train/recon_loss": y_mix_loss.item()
             + y_loss.item()
             + inv_loss.item()
             + sum_loss.item(),
         }
 
+        if config.arch == "vae":
+            log_dict = log_dict | {"train/kld_loss": kld_loss.item()}
+
         if scheduler:
             log_dict = log_dict | {"train/learning_rate": scheduler.get_last_lr()[0]}
 
         if step % config.val_every == 0:
-            val_log = validate(projector, device, val_dl, encoder, config)
+            latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
+            latent = latent.permute(0, 2, 1)  # have to swap it back
+            audio = encoder.decode(latent).cpu()
+
+            log_dict = log_dict | {
+                "train/0/z_mix": wandb.Audio(
+                    audio[0],
+                    caption="decoding of audio mixed in the z domain",
+                    sample_rate=44100,
+                ),
+                "train/0/orig": wandb.Audio(
+                    mixes["g_mix"][0, :, 0].cpu(),
+                    # batch[0, 0, :, 0].cpu(),
+                    caption="original mix",
+                    sample_rate=44100,
+                ),
+                "train/1/z_mix": wandb.Audio(
+                    audio[1],
+                    caption="decoding of audio mixed in the z domain",
+                    sample_rate=44100,
+                ),
+                "train/1/orig": wandb.Audio(
+                    mixes["g_mix"][1, :, 0].cpu(),
+                    # batch[1, 0, :, 0].cpu(),
+                    caption="original mix",
+                    sample_rate=44100,
+                ),
+                "train/2/z_mix": wandb.Audio(
+                    audio[2],
+                    caption="decoding of audio mixed in the z domain",
+                    sample_rate=44100,
+                ),
+                "train/2/orig": wandb.Audio(
+                    mixes["g_mix"][2, :, 0].cpu(),
+                    # batch[2, 0, :, 0].cpu(),
+                    caption="original mix",
+                    sample_rate=44100,
+                ),
+            }
+
+            val_log = validate(projector, device, val_dl, encoder, config, step=step)
             log_dict.update(val_log)
 
         run.log(log_dict)
@@ -741,7 +841,10 @@ def main():
         help="ignore max step and train forever",
     )
     parser.add_argument("--arch", type=str, help="use 'vae' or autoencoder(default)")
+    parser.add_argument("--kld_warmup", type=int, help="warmup of kld in vae")
     parser.add_argument("--augment", action="store_true")
+    parser.set_defaults(augment=False)
+    parser.add_argument("--test", action="store_true")
     parser.set_defaults(augment=False)
     args = parser.parse_args()
 
@@ -751,7 +854,9 @@ def main():
         def sweep_train():
             with wandb.init() as run:
                 config = wandb.config  # get hyperparams from sweep
-                train(run, config, ignore_max_steps=args.ignore_max_steps)
+                train(
+                    run, config, ignore_max_steps=args.ignore_max_steps, test=args.test
+                )
 
         wandb.agent(args.sweep_id, function=sweep_train)
 
@@ -765,6 +870,7 @@ def main():
                 config,
                 checkpoint=args.checkpoint,
                 ignore_max_steps=args.ignore_max_steps,
+                test=args.test,
             )
 
     # --- Mode 3: Single run ---
@@ -789,9 +895,12 @@ def main():
             "scheduler": args.scheduler,
             "augment": args.augment,
             "arch": args.arch,
+            "kld_warmup": args.kld_warmup,
         }
         with wandb.init(config=config) as run:
-            train(run, run.config, ignore_max_steps=args.ignore_max_steps)
+            train(
+                run, run.config, ignore_max_steps=args.ignore_max_steps, test=args.test
+            )
 
 
 if __name__ == "__main__":

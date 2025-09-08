@@ -4,6 +4,7 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 import torchaudio
 from music2latent import EncoderDecoder
 from torchaudio.prototype.pipelines import VGGISH
@@ -122,6 +123,41 @@ class Projector(nn.Module):
         return z, y_hat  # encoder output,  decoder output
 
 
+class VAE(nn.Module):
+    def __init__(self, in_dims, out_dims, hidden_dims=800):
+        super(VAE, self).__init__()
+        self.in_dims, self.out_dims, self.hidden_dims = in_dims, out_dims, hidden_dims
+
+        self.fc1 = nn.Linear(in_dims, hidden_dims)
+        self.fc1a = nn.Linear(hidden_dims, hidden_dims)
+        self.fc21 = nn.Linear(hidden_dims, out_dims)
+        self.fc22 = nn.Linear(hidden_dims, out_dims)
+        self.fc3 = nn.Linear(out_dims, hidden_dims)
+        self.fc3a = nn.Linear(hidden_dims, hidden_dims)
+        self.fc4 = nn.Linear(hidden_dims, in_dims)
+
+    def encode(self, x):
+        h1 = F.relu(self.fc1(x))
+        h2 = F.relu(self.fc1a(h1))
+        return self.fc21(h2), self.fc22(h2)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z):
+        h3 = F.relu(self.fc3(z))
+        h4 = F.relu(self.fc3a(h3))
+        return torch.sigmoid(self.fc4(h4))
+
+    def forward(self, x):
+        # mu, logvar = self.encode(x.view(-1, 784))
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return z, self.decode(z), mu, logvar
+
+
 class ProjectorVAE(nn.Module):
     """
     Main Projector model as a VAE. Patterned after VICReg's simple
@@ -156,12 +192,15 @@ class ProjectorVAE(nn.Module):
             ],
         )
 
-        self.mean_layer = block(
-            hidden_dims, out_dims, act=None, use_bn=use_bn, resid=resid, bias=False
-        )
-        self.var_layer = block(
-            hidden_dims, out_dims, act=None, use_bn=use_bn, resid=resid, bias=False
-        )
+        # self.mean_layer = block(
+        #     hidden_dims, out_dims, act=None, use_bn=use_bn, resid=resid, bias=False
+        # )
+        # self.var_layer = block(
+        #     hidden_dims, out_dims, act=None, use_bn=use_bn, resid=resid, bias=False
+        # )
+
+        self.mean_layer = nn.Linear(hidden_dims, out_dims)
+        self.var_layer = nn.Linear(hidden_dims, out_dims)
 
         self.decoder = nn.Sequential(  # same as encoder, in fact.
             block(out_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid),
@@ -186,8 +225,10 @@ class ProjectorVAE(nn.Module):
         return self.decoder(z)
 
     def forward(self, y):
+        # breakpoint()
         mu, logvar = self.encode(y)
-        z = self.reparameterize(mu, logvar)
+        # z = self.reparameterize(mu, logvar)
+        z = mu + logvar  # remove anything funky happening
         y_hat = self.decode(z)
 
         return z, y_hat, mu, logvar
