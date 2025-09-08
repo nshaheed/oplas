@@ -78,11 +78,11 @@ def do_encode(audio, encoder_model, model_choice="vggish", device="cuda", debug=
 #     return  m | {'ys':ys, 'y_mix':y_mix }
 
 
-def mix_and_encode(stems_full, encoder, debug=False):
+def mix_and_encode(stems_full, encoder, static_mix=False, debug=False):
     """
     This performs the mixing AND the calling of the encoder (assuming it exists)
     """
-    m = mix_stems(stems_full, static_mix=False, debug=debug)
+    m = mix_stems(stems_full, static_mix=static_mix, debug=debug)
     ys = []  # TODO: could make ys a tensor instead of list, for consistency with other variables
     for i in range(m["g_stems"].shape[1]):
         with torch.no_grad():

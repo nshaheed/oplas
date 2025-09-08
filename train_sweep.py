@@ -1,7 +1,7 @@
 # train_sweep.py
 
 import argparse
-from itertools import islice
+from itertools import islice, repeat
 from pathlib import Path
 import os
 import math
@@ -85,7 +85,7 @@ def sigmoid(x):
     return 1 / (1 + math.exp(-x))
 
 
-def kld(mu, logvar, step, warmup=None):
+def kld(mu, logvar, step, warmup=None, debug=False):
     # return torch.tensor(0)
     # print(mu)
     # print(logvar)
@@ -95,10 +95,11 @@ def kld(mu, logvar, step, warmup=None):
     logvar_mean = logvar.mean().item()
     logvar_std = logvar.std().item()
 
-    print(
-        f"mu: mean={mu_mean:.4f}, std={mu_std:.4f} | "
-        f"logvar: mean={logvar_mean:.4f}, std={logvar_std:.4f}"
-    )
+    if debug:
+        print(
+            f"mu: mean={mu_mean:.4f}, std={mu_std:.4f} | "
+            f"logvar: mean={logvar_mean:.4f}, std={logvar_std:.4f}"
+        )
 
     # kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     # kld_element = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
@@ -646,6 +647,17 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         desc="training",
     )
 
+    # repeat one batch infinitely
+    if test:
+        tbatch = tqdm(
+            repeat(next(iter(train_dl))),
+            initial=start_step,
+            total=config.max_steps,
+            unit="batch",
+            desc="training",
+        )
+        # tbatch = repeat(next(iter(tbatch)))
+
     for batch in tbatch:
         step = tbatch.n
         if step >= config.max_steps and not ignore_max_steps:
@@ -660,7 +672,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             batch = augment_effects(batch, sample_rate=44100)
 
         with torch.no_grad():
-            mixes = mix_and_encode(batch, encoder, debug=False)
+            mixes = mix_and_encode(batch, encoder, static_mix=test, debug=False)
             y_mix = mixes["y_mix"].to(torch.float32)
 
         # Vectorized projection logic (more efficient)
@@ -699,6 +711,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         loss = (
             var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss + kld_loss
         )
+
+        loss = y_mix_loss
 
         loss.backward()
         opt.step()
