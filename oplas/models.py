@@ -134,12 +134,20 @@ class VAE(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dims, hidden_dims),
             nn.ReLU(),
+            nn.Linear(hidden_dims, hidden_dims),
+            nn.ReLU(),
+            nn.Linear(hidden_dims, hidden_dims),
+            nn.ReLU(),
         )
         self.mean = nn.Linear(hidden_dims, out_dims)
         self.std = nn.Linear(hidden_dims, out_dims)
 
         self.decoder = nn.Sequential(
             nn.Linear(out_dims, hidden_dims),
+            nn.ReLU(),
+            nn.Linear(hidden_dims, hidden_dims),
+            nn.ReLU(),
+            nn.Linear(hidden_dims, hidden_dims),
             nn.ReLU(),
             nn.Linear(hidden_dims, hidden_dims),
             nn.ReLU(),

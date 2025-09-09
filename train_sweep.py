@@ -115,19 +115,25 @@ def kld(mu, logvar, step, warmup=None, debug=False):
     # mean over all locations per sample
     kld_per_sample = torch.mean(kld_per_loc, dim=(1, 2))  # [batch]
     # mean across batch
-    return torch.mean(kld_per_sample)
+    # return torch.mean(kld_per_sample)
+    kld_loss = torch.mean(kld_per_sample)
 
     # perform kld annealing by scaling the kld over the course of a warmup peroid
-    beta = 1
+    beta_max = 0.125
+    beta = beta_max
     if warmup is not None:
         # breakpoint()
         x = float(step) / float(warmup)
-        beta = 3 * x**2 - 2 * x**3  # smoothstep
-        beta = min(beta, 1.0)  # clamping
+
+        if x >= 1.0:
+            beta = beta_max
+        else:
+            beta = 3 * x**2 - 2 * x**3  # smoothstep
+            beta = beta * beta_max  # clamping and scaling
 
     # print(f'kld pre-beta: {kld_loss}, {warmup=}, {beta=}, {step=}')
 
-    return beta * kld_loss
+    return beta * kld_loss, beta
 
 
 def augment_effects(
@@ -458,10 +464,10 @@ def validate(projector, device, val_dl, encoder, config, step=None):
     y_mix_loss = loss_fn(y_mix, y_hat_mix)
     sum_loss = loss_fn(y_mix, y_sum)
 
-    kld_loss = 0
+    kld_loss, kld_beta = 0, 0
     if config.arch == "vae":
         mu, logvar = params
-        kld_loss = kld(mu, logvar, step, config.kld_warmup)
+        kld_loss, kld_beta = kld(mu, logvar, step, config.kld_warmup)
 
     var_loss = config.var_coeff * vicreg_loss["var_loss"]
     # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
@@ -487,7 +493,10 @@ def validate(projector, device, val_dl, encoder, config, step=None):
     }
 
     if config.arch == "vae":
-        log = log | {"val/kld_loss": kld_loss.item()}
+        log = log | {
+            "val/kld_loss": kld_loss.item(),
+            "val/kld_beta": kld_beta,
+        }
 
     # actually generate some audio examples
     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
@@ -698,9 +707,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         sum_loss = loss_fn(y_mix, y_sum)
 
         kld_loss = torch.tensor(0)
+        kld_beta = 0
         if config.arch == "vae":
             mu, logvar = params
-            kld_loss = kld(mu, logvar, step, config.kld_warmup)
+            kld_loss, kld_beta = kld(mu, logvar, step, config.kld_warmup)
 
         var_loss = config.var_coeff * vicreg_loss["var_loss"]
         # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
@@ -711,7 +721,15 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss + kld_loss
         )
 
-        loss = y_mix_loss
+        loss = (
+            var_loss
+            + (0 * cov_loss)
+            + y_mix_loss
+            + y_loss
+            + inv_loss
+            + sum_loss
+            + kld_loss
+        )
 
         loss.backward()
         opt.step()
@@ -735,7 +753,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         }
 
         if config.arch == "vae":
-            log_dict = log_dict | {"train/kld_loss": kld_loss.item()}
+            log_dict = log_dict | {
+                "train/kld_loss": kld_loss.item(),
+                "train/kld_beta": kld_beta,
+            }
 
         if scheduler:
             log_dict = log_dict | {"train/learning_rate": scheduler.get_last_lr()[0]}
