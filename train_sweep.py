@@ -829,6 +829,9 @@ def main():
     parser.add_argument("--inv_coeff", type=float, default=1.0)
     parser.add_argument("--cov_coeff", type=float, default=1.0)
 
+    parser.add_argument("--adams_beta1", type=float, default=0.9)
+    parser.add_argument("--adams_epsilon", type=float, default=1e-8)
+
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument(
         "--data_dir", type=str, default="/scratch/users/nshaheed/musdb18"
@@ -891,8 +894,8 @@ def main():
     else:
         config = {
             "learning_rate": args.learning_rate,
-            "adams_beta1": 0.9,
-            "adams_epsilon": 1e-8,
+            "adams_beta1": args.adams_beta1,
+            "adams_epsilon": args.adams_epsilon,
             "num_inner_layers": args.num_inner_layers,
             "hidden_dims_scale": args.hidden_dims_scale,
             "projector_dims": args.projector_dims,
