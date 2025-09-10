@@ -14,8 +14,99 @@ import torchaudio
 from torch.utils.data import Dataset, IterableDataset, ChainDataset
 from tqdm import tqdm, trange
 
+from torch_audiomentations import (
+    Compose,
+    AddColoredNoise,
+    AddBackgroundNoise,
+    ApplyImpulseResponse,
+    PitchShift,
+    PolarityInversion,
+    Gain,
+    BandPassFilter,
+    BandStopFilter,
+    HighPassFilter,
+    LowPassFilter,
+)
+
 # from tqdm.contrib.concurrent import process_map # doesn't work great w/ jupyter
 from tqdm.contrib.concurrent import process_map
+
+
+def augment_effects(
+    waveforms: torch.Tensor,
+    sample_rate: int = 44100,
+    use_noise: bool = True,
+) -> torch.Tensor:
+    """
+    Apply randomized augmentations to audio waveforms using torch-audiomentations.
+
+
+    Args:
+    waveforms (torch.Tensor): Input tensor of shape [batch_size, stems, time, channels]
+    sample_rate (int): Audio sample rate used for augmentations
+    use_noise (bool): Enable various noise augmentations
+
+
+    Returns:
+    torch.Tensor: Augmented tensor of the same shape
+    """
+    stems, time, channels = waveforms.shape
+
+    # Rearrange into [batch*stems*channels, 1, time] for torch-audiomentations
+    waveforms_reshaped = (
+        waveforms.permute(0, 2, 1).reshape(  # [batch, stems, channels, time]
+            -1, 1, time
+        )  # [batch*stems*channels, 1, time]
+    )
+
+    # waveforms_reshaped = (
+    #     waveforms.permute(0, 1, 3, 2).reshape(  # [batch, stems, channels, time]
+    #         -1, 1, time
+    #     )  # [batch*stems*channels, 1, time]
+    # )
+
+    # Build augmentation pipeline
+    transforms = []
+
+    mode = "per_channel"
+    ot = "tensor"  # output type
+
+    if use_noise:
+        transforms.append(
+            AddColoredNoise(
+                min_snr_in_db=10, max_snr_in_db=30, p=0.5, mode=mode, output_type=ot
+            )
+        )
+        # transforms.append(AddBackgroundNoise(background_paths="./backgrounds", p=0.5))
+        # transforms.append(ApplyImpulseResponse(ir_paths="./impulse_responses", p=0.5))
+
+    transforms.extend(
+        [
+            PitchShift(
+                min_transpose_semitones=-2,
+                max_transpose_semitones=2,
+                sample_rate=sample_rate,
+                p=0.5,
+                mode=mode,
+                output_type=ot,
+            ),
+            PolarityInversion(p=0.3, mode=mode, output_type=ot),
+            BandPassFilter(p=0.3, mode=mode, output_type=ot),
+            BandStopFilter(p=0.3, mode=mode, output_type=ot),
+            HighPassFilter(p=0.3, mode=mode, output_type=ot),
+            LowPassFilter(p=0.3, mode=mode, output_type=ot),
+        ]
+    )
+
+    augment = Compose(transforms, output_type=ot)
+
+    # Apply augmentations
+    augmented = augment(waveforms_reshaped, sample_rate=sample_rate)
+
+    # Reshape back to [batch_size, stems, time, channels]
+    augmented = augmented.reshape(stems, channels, time).permute(0, 2, 1)
+
+    return augmented
 
 
 class RandomMixDataset(IterableDataset):
@@ -47,10 +138,12 @@ class MTGJamendoStream(IterableDataset):
     def __init__(
         self,
         data_dir="/scratch/users/nshaheed/mtg-jamendo",
+        # data_dir="/scratch/nshaheed/mtg-jamendo",
         chunk_size=2**18,
         sample_rate=44100,
         max_num_stems=5,
         load_frac=1.0,
+        augment=False,
         debug=False,
     ):
         self.songs_listed = sorted(glob(f"{data_dir}/*/*.mp3"))
@@ -64,6 +157,7 @@ class MTGJamendoStream(IterableDataset):
         self.sample_rate = sample_rate
         self.debug = debug
         self.max_num_stems = max_num_stems
+        self.augment = augment
 
         # Precompute song lengths in samples
         # self.song_lengths = []
@@ -142,6 +236,9 @@ class MTGJamendoStream(IterableDataset):
             #     if stem.shape != torch.Size([262144,2]):
             #         print("NO")
             stems_tensor = torch.stack(stems)
+
+            if self.augment:
+                stems_tensor = augment_effects(stems_tensor, self.sample_rate)
 
             # if stems_tensor.shape != [max_stems, 262144,2]:
             #     breakpoint()
@@ -291,6 +388,7 @@ class StemChunkStream(IterableDataset):
         chunk_size=2**18,  # number of samples per chunk
         sample_rate=44100,
         load_frac=1.0,  # fraction of dataset to use
+        augment=False,
         debug=False,
     ):
         if debug:
@@ -304,6 +402,7 @@ class StemChunkStream(IterableDataset):
 
         self.chunk_size = chunk_size
         self.sample_rate = sample_rate
+        self.augment = augment
         self.debug = debug
 
         # Precompute song lengths in samples
@@ -370,6 +469,9 @@ class StemChunkStream(IterableDataset):
                 print(
                     f"Loaded {song_path} [{start_sec:.2f}s -> {start_sec + duration_sec:.2f}s], shape={data.shape}"
                 )
+
+            if self.augment:
+                data = augment_effects(data, self.sample_rate)
 
             # print(data.shape)
             yield data
