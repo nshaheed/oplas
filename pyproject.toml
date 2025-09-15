@@ -31,6 +31,7 @@ dependencies = [
   "scalene>=1.5.53",
   "torch-audiomentations>=0.12.0",
   "latent-effects",
+  "psutil>=7.0.0",
 ]
 
 [build-system]
