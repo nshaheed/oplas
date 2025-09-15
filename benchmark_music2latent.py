@@ -6,6 +6,8 @@ import torch
 
 from oplas.models import Projector
 
+from music2latent import EncoderDecoder
+
 parser = argparse.ArgumentParser(
     description="Run inference benchmarks on projector model."
 )
@@ -29,10 +31,6 @@ parser.add_argument(
     "-d", "--device", type=str, default="cpu", help="which device to run benchmark"
 )
 
-parser.add_argument("--inner", default="8", type=int)
-parser.add_argument("--hidden", default="8", type=int)
-parser.add_argument("--proj", default="64", type=int)
-
 args = parser.parse_args()
 
 device = torch.device(args.device)
@@ -43,13 +41,7 @@ device = torch.device(args.device)
 # )
 
 
-proj = args.proj
-inner = args.inner
-hidden = args.hidden
-projector = Projector(64, proj, num_inner_layers=inner, hidden_dims_scale=hidden).to(
-    device
-)
-
+m2l = EncoderDecoder(device=args.device)
 
 # print(projector(input)[0].shape)
 
@@ -57,9 +49,12 @@ for batch in args.batches:
     repetitions = args.repetitions
     times = []
     for _ in range(repetitions):
-        input = torch.randn(batch, 64).to(device)
+        # input = torch.randn(batch, 64).to(device)
+        # breakpoint()
+        input = torch.randn(batch, 4096 + 2048).to(device)
         start = time.time()
-        projector(input)
+        latent = m2l.encode(input)
+        out = m2l.decode(latent)
         end = time.time()
         times.append(end - start)
 

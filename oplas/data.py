@@ -877,4 +877,4 @@ if __name__ == "__main__":
     #         for j in range(song.shape[1]):
     #             vec = song[i, j, :]
     #             vec_norm = vec.norm()
-    #             print(f"song[{s}][{i},{j},:].norm() = {vec_norm:.3f}")
+    #             Print(f"song[{s}][{i},{j},:].norm() = {vec_norm:.3f}")
