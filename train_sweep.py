@@ -5,6 +5,7 @@ from itertools import islice, repeat
 from pathlib import Path
 import os
 import math
+import time
 
 import numpy as np
 import torch
@@ -574,7 +575,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         # tbatch = repeat(next(iter(tbatch)))
 
     mixes = None
+
+    dataload_time = time.time()
     for batch in tbatch:
+        print(f'Data loading time: {time.time() - dataload_time}s')
         step = tbatch.n
         if step >= config.max_steps and not ignore_max_steps:
             break
@@ -586,12 +590,15 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         # if config.augment:
         #     batch = augment_effects(batch, sample_rate=44100)
 
+        encoding_time = time.time()
         with torch.no_grad():
             if test and mixes is None:
                 mixes = mix_and_encode(batch, encoder, static_mix=test, debug=False)
             if not test:
                 mixes = mix_and_encode(batch, encoder, static_mix=test, debug=False)
             y_mix = mixes["y_mix"].to(torch.float32)
+
+        print(f'Encoding time: {time.time() - encoding_time}s')
 
         # Vectorized projection logic (more efficient)
         z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
@@ -711,6 +718,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             artifact = wandb.Artifact(f"model-ckpt-{run.id}", type="model")
             artifact.add_file(local_path=checkpoint_path, name="model.pt")
             run.log_artifact(artifact)
+        
+        dataload_time = time.time()
 
 
 def main():
