@@ -1,8 +1,21 @@
 import torch
 import torch.nn.functional as F
+from torch import nn
+
 from vicregaddon import vicreg_cov_loss, vicreg_inv_loss, vicreg_var_loss
 
 from .mixing import do_encode, mix_and_encode
+
+
+def get_loss_fn(val):
+    loss_fn = nn.MSELoss()
+    if val == "mse":
+        loss_fn = nn.MSELoss()
+    elif val == "pseudo-huber":
+        loss_fn = pseudo_huber
+
+    return loss_fn
+
 
 
 def pseudo_huber(l1, l2, c=0.03):
@@ -108,3 +121,48 @@ def get_loss_on_batch(
         "y_sum": y_sum,
     }
     return losses, info
+
+
+def kld(mu, logvar, step, warmup=None, debug=False):
+    # return torch.tensor(0)
+    # print(mu)
+    # print(logvar)
+
+    mu_mean = mu.mean().item()
+    mu_std = mu.std().item()
+    logvar_mean = logvar.mean().item()
+    logvar_std = logvar.std().item()
+
+    if debug:
+        print(
+            f"mu: mean={mu_mean:.4f}, std={mu_std:.4f} | "
+            f"logvar: mean={logvar_mean:.4f}, std={logvar_std:.4f}"
+        )
+
+    # kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    # kld_element = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # kld_loss = torch.mean(torch.sum(kld_element, dim=1))
+
+    # print(f'{mu.shape=}')
+    # breakpoint()
+
+    # mu, logvar: [batch, 4, 63, 16]
+    kld_element = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # sum over latent dim (last one)
+    kld_per_loc = torch.sum(kld_element, dim=-1)  # [batch, 4, 63]
+    # mean over all locations per sample
+    kld_per_sample = torch.mean(kld_per_loc, dim=(1, 2))  # [batch]
+    # mean across batch
+    return torch.mean(kld_per_sample)
+
+    # perform kld annealing by scaling the kld over the course of a warmup peroid
+    beta = 1
+    if warmup is not None:
+        # breakpoint()
+        x = float(step) / float(warmup)
+        beta = 3 * x**2 - 2 * x**3  # smoothstep
+        beta = min(beta, 1.0)  # clamping
+
+    # print(f'kld pre-beta: {kld_loss}, {warmup=}, {beta=}, {step=}')
+
+    return beta * kld_loss

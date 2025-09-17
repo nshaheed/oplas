@@ -4,10 +4,12 @@ import librosa
 import torch
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
+import numpy as np
 
 import psutil
 import os
 
+import math
 import random
 from tqdm import tqdm
 from glob import glob
@@ -26,6 +28,7 @@ class SongDataset(Dataset):
         self.data_dir = data_dir
         self.songs_listed = sorted(glob(f"{data_dir}/*/*.mp3"))
         self.sample_rate = sample_rate
+        # self.songs_listed = self.songs_listed[:50]
 
     def __len__(self):
         return len(self.songs_listed)
@@ -35,24 +38,56 @@ class SongDataset(Dataset):
         waveform, sr = librosa.load(song, sr=self.sample_rate)
 
         # remove second channel etc etc
-        if len(waveform.shape) > 1:
-            breakpoint()
+        # if len(waveform.shape) > 1:
+        #     breakpoint()
 
         # return both waveform and the relative path
         return waveform, os.path.relpath(song, start=self.data_dir)
 
 
+# Get the index of the current CUDA device
+device_idx = torch.cuda.current_device()
+
+# Get total memory (in bytes)
+total_memory = torch.cuda.get_device_properties(device_idx).total_memory
+
+# Convert to GB
+total_memory_gb = total_memory / (1024**3)
+
+print(f"Total VRAM: {total_memory_gb:.2f} GB")
+
+mem_batch_size = 1
+# v100
+if total_memory_gb < 4:
+    mem_batch_size = 3
+elif total_memory_gb < 8:
+    mem_batch_size = 6
+elif total_memory_gb < 11:
+    mem_batch_size = 8
+elif total_memory_gb < 16:
+    mem_batch_size = 12
+elif total_memory_gb < 32:
+    mem_batch_size = 24
+elif total_memory_gb < 48:
+    mem_batch_size = 36
+elif total_memroy_gb < 80:
+    mem_batch_szie = 60
+
+
+
+
 encdec = EncoderDecoder()
 
 data_dir = "/scratch/users/nshaheed/mtg-jamendo/"
+save_file = "/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz"
 dataset = SongDataset(data_dir)
 
 dataloader = DataLoader(dataset, batch_size=1,
-                        shuffle=False, num_workers=2)
+                        shuffle=False, num_workers=8)
 
 progress = tqdm(dataloader)
 
-latents = []
+latents = {}
 
 total_time = time.time()
 
@@ -62,14 +97,17 @@ for song, path in progress:
 
     # waveform, sr = librosa.load(song, sr=sample_rate)
 
-    start = time.time()
-    latent = encdec.encode(song, max_waveform_length=44100*3, max_batch_size=20).to('cpu')
-    print(f'encoding: {time.time() - start:.2f}s')
+    # start = time.time()
+    latent = encdec.encode(song, max_waveform_length=44100*6, max_batch_size=mem_batch_size)
+    # print(f'encoding: {time.time() - start:.2f}s')
 
-    latents.append(latent)
+    latents[path] = latent.cpu().detach().numpy()
 
-    print(f'total time: {time.time() - total_time:.2f}s')
-    total_time = time.time()
+    # save to file
+
+    # print(f'total time: {time.time() - total_time:.2f}s')
+    # total_time = time.time()
 
     progress.set_postfix(mem=f'{memory_usage():.2f}GB')
 
+np.savez(save_file, **latents)
