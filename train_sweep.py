@@ -17,9 +17,9 @@ import torch.multiprocessing as mp
 import wandb
 
 # Assuming your custom modules are in the python path
-from oplas.data import StemChunk, StemChunkStream, MTGJamendoStream, RandomMixDataset
+from oplas.data import StemChunk, StemChunkStream, MTGJamendoStreamSingle, RandomMixDataset
 from oplas.losses import vicreg_loss_fn, get_loss_fn, kld
-from oplas.mixing import mix_and_encode
+from oplas.mixing import mix_and_encode, mix_single
 from oplas.models import Music2Latent, Projector, ProjectorVAE, VAE
 from oplas.helper import save_model, get_scheduler
 
@@ -204,9 +204,15 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     # --- Data Loading ---
     # train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
     stems_dataset = StemChunkStream(
-        data_dir=config.data_dir, load_frac=config.load_frac, augment=config.augment
+        data_dir=config.data_dir, 
+        # data_dir="/scratch/users/nshaheed/mtg-jamendo-wav/", 
+        load_frac=config.load_frac, augment=config.augment
     )
-    mtg_dataset = MTGJamendoStream(augment=config.augment)
+    mtg_dataset = MTGJamendoStreamSingle(
+        data_dir="/scratch/users/nshaheed/mtg-jamendo-wav/",
+        augment=config.augment,
+        load_frac=0.1,
+    )
     train_dataset = RandomMixDataset([stems_dataset, mtg_dataset])
     val_dataset = StemChunkStream(
         data_dir=config.data_dir, subset="test", load_frac=config.load_frac
@@ -215,10 +221,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     if test:
         # for debugging on sh_dev
         train_dl = DataLoader(  # do 12 workers?
-            stems_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+            mtg_dataset, batch_size=config.batch_size, num_workers=1, pin_memory=True
         )
         val_dl = DataLoader(
-            val_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+            mtg_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
         )
     else:
         train_dl = DataLoader(  # do 12 workers?
@@ -236,30 +242,36 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         total=config.max_steps,
         unit="batch",
         desc="training",
+        smoothing=0,
     )
 
     # repeat one batch infinitely
-    if test:
-        tbatch = tqdm(
-            repeat(next(iter(train_dl))),
-            initial=start_step,
-            total=config.max_steps,
-            unit="batch",
-            desc="training",
-        )
-        # tbatch = repeat(next(iter(tbatch)))
+    # if test:
+    #     tbatch = tqdm(
+    #         repeat(next(iter(train_dl))),
+    #         initial=start_step,
+    #         total=config.max_steps,
+    #         unit="batch",
+    #         desc="training",
+    #     )
+    #     # tbatch = repeat(next(iter(tbatch)))
 
     mixes = None
 
     dataload_time = time.time()
     for batch in tbatch:
-        print(f'Data loading time: {time.time() - dataload_time}s')
+        print(f'Data loading time: {time.time() - dataload_time:.05f}s')
         step = tbatch.n
         if step >= config.max_steps and not ignore_max_steps:
             break
         batch = batch.to(device)
         # batch = torch.rand_like(batch)
         opt.zero_grad()
+
+        # resize batch so that it has shape [batch, num_stems, latent, time]
+        b, l, t = batch.shape
+        s = config.num_stems
+        batch = batch.view(b // s, s, l, t)
 
         # augment with effects
         # if config.augment:
@@ -268,12 +280,14 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         encoding_time = time.time()
         with torch.no_grad():
             if test and mixes is None:
-                mixes = mix_and_encode(batch, encoder, static_mix=test, debug=False)
+                mixes = mix_single(batch, encoder, static_mix=test, debug=False)
             if not test:
-                mixes = mix_and_encode(batch, encoder, static_mix=test, debug=False)
+                mixes = mix_single(batch, encoder, static_mix=test, debug=False)
             y_mix = mixes["y_mix"].to(torch.float32)
 
-        print(f'Encoding time: {time.time() - encoding_time}s')
+        print(f'Encoding time:     {time.time() - encoding_time:.05f}s')
+
+        processing_time = time.time()
 
         # Vectorized projection logic (more efficient)
         z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
@@ -319,6 +333,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         if scheduler:
             scheduler.step()
 
+        print(f'Processing time:   {time.time() - processing_time:.05f}s')
+
         # --- Logging ---
         tbatch.set_postfix(loss=loss.item(), sum_loss=sum_loss.item())
         log_dict = {
@@ -341,7 +357,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         if scheduler:
             log_dict = log_dict | {"train/learning_rate": scheduler.get_last_lr()[0]}
 
-        if step % config.val_every == 0:
+        if step % config.val_every == 0 and False:
             latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
             latent = latent.permute(0, 2, 1)  # have to swap it back
             audio = encoder.decode(latent).cpu()
@@ -435,6 +451,7 @@ def main():
     parser.add_argument("--adams_epsilon", type=float, default=1e-8)
 
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_stems", type=int, default=16)
     parser.add_argument(
         "--data_dir", type=str, default="/scratch/users/nshaheed/musdb18"
     )

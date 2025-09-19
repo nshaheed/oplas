@@ -16,7 +16,7 @@ from glob import glob
 from music2latent import EncoderDecoder
 import time
 
-from oplas.data import MTGJamendoStream
+from oplas.data import MTGJamendoStream, MTGJamendoStreamSingle
 
 def memory_usage():
     process = psutil.Process(os.getpid())
@@ -47,14 +47,15 @@ class SongDataset(Dataset):
         return waveform, os.path.relpath(song, start=self.data_dir)
 
 
-# Get the index of the current CUDA device
-device_idx = torch.cuda.current_device()
+# # Get the index of the current CUDA device
+# device_idx = torch.cuda.current_device()
 
-# Get total memory (in bytes)
-total_memory = torch.cuda.get_device_properties(device_idx).total_memory
+# # Get total memory (in bytes)
+# total_memory = torch.cuda.get_device_properties(device_idx).total_memory
 
-# Convert to GB
-total_memory_gb = total_memory / (1024**3)
+# # Convert to GB
+# total_memory_gb = total_memory / (1024**3)
+total_memory_gb = 1
 
 print(f"Total VRAM: {total_memory_gb:.2f} GB")
 
@@ -80,15 +81,17 @@ elif total_memroy_gb < 80:
 
 encdec = EncoderDecoder()
 
-data_dir = "/scratch/users/nshaheed/mtg-jamendo/"
+data_dir = "/scratch/users/nshaheed/mtg-jamendo-wav/"
+# data_dir = "/lscratch/nshaheed/mtg-jamendo/"
 save_file = "/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz"
+
 # dataset = SongDataset(data_dir)
-dataset = MTGJamendoStream()
+dataset = MTGJamendoStreamSingle(data_dir=data_dir, load_frac=0.1)
 
 dataloader = DataLoader(dataset, batch_size=1,
-                        shuffle=False, num_workers=4)
+                        shuffle=False, num_workers=8)
 
-progress = tqdm(dataloader)
+progress = tqdm(dataloader, smoothing=0)
 
 latents = {}
 audios = []
@@ -101,7 +104,7 @@ for song in progress:
 
     # waveform, sr = librosa.load(song, sr=sample_rate)
 
-    print(f'{song.shape=}')
+    # print(f'{song.shape=}')
 
     # start = time.time()
     # latent = encdec.encode(song, max_waveform_length=44100*6, max_batch_size=mem_batch_size)
@@ -109,7 +112,7 @@ for song in progress:
 
     # latents[path] = latent.cpu().detach().numpy()
 
-    audios.append(song)
+    # audios.append(song)
     # print(len(audios))
 
     # save to file
@@ -119,4 +122,4 @@ for song in progress:
 
     progress.set_postfix(mem=f'{memory_usage():.2f}GB')
 
-np.savez(save_file, **latents)
+# np.savez(save_file, **latents)

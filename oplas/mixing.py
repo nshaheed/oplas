@@ -78,6 +78,15 @@ def do_encode(audio, encoder_model, model_choice="vggish", device="cuda", debug=
 #     return  m | {'ys':ys, 'y_mix':y_mix }
 
 
+def mix_stems_single(stems_in, static_mix=True, debug=False):
+    """ Mix a lot of stems from a single batch """
+    if static_mix:
+        g_mix = torch.sum(stems_in, dim=1)
+        return {"g_stems": stems_in, "g_mix": g_mix}
+
+    # TODO make this work for non-static stems
+    pass
+
 def mix_and_encode(stems_full, encoder, static_mix=False, debug=False):
     """
     This performs the mixing AND the calling of the encoder (assuming it exists)
@@ -97,5 +106,20 @@ def mix_latents(stems, encoder, static_mix=False, debug=False):
     """
     # stems: [batch, latents, time]
 
-    # breakpoint()
     stems_audio = encoder.decode(stems, max_waveform_length=44100*6, max_batch_size=2)
+
+def mix_single(stems, encoder, static_mix=True, debug=False):
+
+    m = mix_stems_single(stems, static_mix=static_mix, debug=debug)
+
+    ys = []
+
+    breakpoint()
+    # this isn't working
+    for i in range(m["g_stems"].shape[0]):
+        with torch.no_grad():
+            y = encoder.forward(m["g_stems"][i])
+        ys.append(y)
+
+    y_mix = encoder.forward(m["g_mix"])
+    return m | {"ys": ys, "y_mix": y_mix}

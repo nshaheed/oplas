@@ -2,25 +2,40 @@ import os
 import time
 import soundfile as sf
 from tqdm import tqdm
+from glob import glob
+
+import psutil
+
+def memory_usage():
+    process = psutil.Process(os.getpid())
+    mem_bytes = process.memory_info().rss  # Resident Set Size
+    return mem_bytes / (1024 ** 3)  # Convert to MB
 
 def load_audio_files(directory, max_duration=30.0):
     """Load the first `max_duration` seconds of audio files in a directory using soundfile."""
     audio_data = {}
     start_time = time.perf_counter()
 
-    files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
+    # files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
+    files = sorted(glob(f"{directory}/*/*.mp3"))
 
-    for filename in tqdm(files, desc="Loading audio files"):
+    progress = tqdm(files, desc="Loading audio files")
+
+    for filename in progress:
         filepath = os.path.join(directory, filename)
 
         try:
             with sf.SoundFile(filepath) as f:
                 samplerate = f.samplerate
                 frames_to_read = int(max_duration * samplerate)
-                data = f.read(frames=frames_to_read, dtype="float32", always_2d=True)
-                audio_data[filename] = (data, samplerate)
+                # data = f.read(frames=frames_to_read, dtype="float32", always_2d=True)
+                data = f.read(dtype="float32", always_2d=True)
+                # audio_data[filename] = (data, samplerate)
+                audio_data[filename] = filepath
         except RuntimeError as e:
             tqdm.write(f"Skipping {filename}: {e}")
+
+        progress.set_postfix(mem=f'{memory_usage():.2f}GB')
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time

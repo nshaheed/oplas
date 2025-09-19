@@ -360,8 +360,7 @@ class Music2Latent(nn.Module):
     @torch.no_grad()
     def encode(self, audio):
         # m2l needs mono audio (I think)
-        breakpoint()
-        audio = torch.mean(audio, dim=-1)
+        # audio = torch.mean(audio, dim=-1)
         encodings = self.encdec.encode(audio)
 
         return encodings

@@ -188,6 +188,94 @@ class MTGJamendo(Dataset):
         return chunk[0]
 
 
+class MTGJamendoStreamSingle(Dataset):
+    """Loads pre-encoded audio files from a .npz file.
+
+    While the previous approach involved loading equal-sized chunks
+    from several audio files, this dataset will preload everything
+    in-memory and then only return the chunk from one audio file.
+
+    """
+    def __init__(
+        self,
+        data_dir="/scratch/users/nshaheed/mtg-jamendo",
+        # data_dir="/scratch/nshaheed/mtg-jamendo",
+        chunk_size=2**18,
+        sample_rate=44100,
+        load_frac=1.0,
+        augment=False,
+        debug=False,
+    ):
+        # self.songs_listed = sorted(glob(f"{data_dir}/*/*.mp3"))
+        self.songs_listed = sorted(glob(f"{data_dir}/*/*.wav"))
+        self.chunk_size = chunk_size
+        self.debug = debug
+        self.augment = augment
+        self.sample_rate = sample_rate
+
+        if load_frac < 1.0:
+            keep_n = int(len(self.songs_listed) * load_frac)
+            keep_n = max(keep_n, 1)
+            self.songs_listed = random.sample(self.songs_listed, keep_n)
+
+        self.song_metadata = []
+        get_metadata = tqdm(self.songs_listed)
+        get_metadata.set_description('loading audio metadata')
+        for path in get_metadata:
+            info = sf.info(path)
+            self.song_metadata.append({
+                'path': path,
+                'samplerate': info.samplerate,
+                'duration': info.duration,
+                'num_samples': int(info.samplerate * info.duration),
+            })
+
+    def __len__(self):
+        return len(self.songs_listed)
+
+    def __getitem__(self, idx):
+        if self.debug is True:
+            print(f"{len(self.songs_listed)=}")
+
+        # random bs involving seeding different rngs
+        worker_info = torch.utils.data.get_worker_info()
+        seed = worker_info.seed if worker_info else random.randint(0, 2**32 - 1)
+        rng = random.Random(seed)
+        np.random.seed(seed % (2**32 - 1))
+        torch.manual_seed(seed)
+
+        song_path = self.songs_listed[idx]
+        info = self.song_metadata[idx]
+        samplerate = info['samplerate']
+        duration = info['duration']
+        length = int(samplerate*duration)
+        chunk_size_dur = self.chunk_size / self.sample_rate
+        chunk_size_file = int(chunk_size_dur * samplerate) + samplerate
+
+        rand_start = torch.randint(length-chunk_size_file, size=(1,)).item()
+        wv,_ = sf.read(song_path, frames=chunk_size_file, start=rand_start, stop=None, dtype='float32', always_2d=True)
+        wv = torch.from_numpy(wv)
+        if wv.shape[-1]==1:
+            wv = torch.cat([wv,wv], dim=1)
+        wv = wv[:,:2]
+        wv = wv.permute(1,0)
+
+        # if not stereo:
+        wv = wv[torch.randint(wv.shape[0], size=(1,)).item(),:]
+                    
+        # rms = torch.sqrt(torch.mean(wv**2))
+        # if rms < self.rms_min:
+        #     idx = torch.randint(self.tot_samples, size=(1,)).item()
+        #     return self.__getitem__(idx)
+        ## -----------
+        # return wv
+                
+        # TODO actually handle things properly
+        # breakpoint()
+        wv = wv[:self.chunk_size]
+        return wv
+
+
 class MTGJamendoStream(IterableDataset):
     def __init__(
         self,
@@ -249,64 +337,64 @@ class MTGJamendoStream(IterableDataset):
                 song_path = self.songs_listed[song_idx]
 
                 # ----- without sf ----
-                info = torchaudio.info(song_path)
-                file_sr = info.sample_rate
-                file_frames = info.num_frames
-                file_dur = file_frames / file_sr
+                # info = torchaudio.info(song_path)
+                # file_sr = info.sample_rate
+                # file_frames = info.num_frames
+                # file_dur = file_frames / file_sr
 
-                if file_dur <= chunk_size_dur:
-                    continue  # skip too-short songs
+                # if file_dur <= chunk_size_dur:
+                #     continue  # skip too-short songs
 
-                # add an extra second to avoid getting errors with resampling
-                # yes this is a hack
-                chunk_size_file = int(chunk_size_dur * file_sr) + file_sr
-                # Pick a random start position in seconds
-                start_frame = rng.randint(0, file_frames - chunk_size_file)
+                # # add an extra second to avoid getting errors with resampling
+                # # yes this is a hack
+                # chunk_size_file = int(chunk_size_dur * file_sr) + file_sr
+                # # Pick a random start position in seconds
+                # start_frame = rng.randint(0, file_frames - chunk_size_file)
 
-                waveform, sr = torchaudio.load(
-                    song_path,
-                    frame_offset=start_frame,
-                    num_frames=chunk_size_file,
-                    channels_first=False,
-                    backend='soundfile',
-                )
+                # waveform, sr = torchaudio.load(
+                #     song_path,
+                #     frame_offset=start_frame,
+                #     num_frames=chunk_size_file,
+                #     channels_first=False,
+                #     backend='soundfile',
+                # )
 
-                # waveform = waveform[0] # get first channel
-                if sr != self.sample_rate:
-                    resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
-                    waveform = resampler(waveform)
+                # # waveform = waveform[0] # get first channel
+                # if sr != self.sample_rate:
+                #     resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
+                #     waveform = resampler(waveform)
                 # ----- without sf ----
 
                 ## try with sf
-                # info = sf.info(song_path)
-                # samplerate = info.samplerate
-                # duration = info.duration
-                # length = int(samplerate*duration)
-                # chunk_size_file = int(chunk_size_dur * samplerate) + samplerate
+                info = sf.info(song_path)
+                samplerate = info.samplerate
+                duration = info.duration
+                length = int(samplerate*duration)
+                chunk_size_file = int(chunk_size_dur * samplerate) + samplerate
 
-                # rand_start = torch.randint(length-chunk_size_file, size=(1,)).item()
-                # wv,_ = sf.read(song_path, frames=chunk_size_file, start=rand_start, stop=None, dtype='float32', always_2d=True)
-                # wv = torch.from_numpy(wv)
-                # if wv.shape[-1]==1:
-                #     wv = torch.cat([wv,wv], dim=1)
-                # wv = wv[:,:2]
-                # wv = wv.permute(1,0)
+                rand_start = torch.randint(length-chunk_size_file, size=(1,)).item()
+                wv,_ = sf.read(song_path, frames=chunk_size_file, start=rand_start, stop=None, dtype='float32', always_2d=True)
+                wv = torch.from_numpy(wv)
+                if wv.shape[-1]==1:
+                    wv = torch.cat([wv,wv], dim=1)
+                wv = wv[:,:2]
+                wv = wv.permute(1,0)
 
-                # # if not stereo:
-                # wv = wv[torch.randint(wv.shape[0], size=(1,)).item(),:]
+                # if not stereo:
+                wv = wv[torch.randint(wv.shape[0], size=(1,)).item(),:]
                     
-                # # rms = torch.sqrt(torch.mean(wv**2))
-                # # if rms < self.rms_min:
-                # #     idx = torch.randint(self.tot_samples, size=(1,)).item()
-                # #     return self.__getitem__(idx)
-                # ## -----------
-                # # return wv
+                # rms = torch.sqrt(torch.mean(wv**2))
+                # if rms < self.rms_min:
+                #     idx = torch.randint(self.tot_samples, size=(1,)).item()
+                #     return self.__getitem__(idx)
+                ## -----------
+                # return wv
                 
-                # # TODO actually handle things properly
-                # # breakpoint()
-                # wv = wv[:self.chunk_size]
-                # stems.append(wv)
-                # continue
+                # TODO actually handle things properly
+                # breakpoint()
+                wv = wv[:self.chunk_size]
+                stems.append(wv)
+                continue
 
                 waveform = waveform[
                     : self.chunk_size, :
