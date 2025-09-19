@@ -140,17 +140,8 @@ def validate(projector, device, val_dl, encoder, config, step=None):
 
 def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     """Main training function wrapped for W&B sweeps."""
-    # Initialize a new wandb run
-    # run = wandb.init()
-    # config = wandb.config  # Get hyperparams from the sweep
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
-
-    # config.load_frac = 0.02
-    # config.batch_size = 1
-    # config.num_inner_layers = 1
-    # config.hidden_dims_scale = 1
 
     # handle old models where this wasn't a variable
     out_dims = config.projector_dims if "projector_dims" in config else 64
@@ -183,10 +174,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         betas=(config.adams_beta1, 0.999),
         eps=config.adams_epsilon,
     )
-    # TODO use fixed learning rate for now
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    #     opt, max_lr=config.learning_rate, total_steps=config.max_steps
-    # )
+
     scheduler = get_scheduler(opt, config)
 
     loss_fn = get_loss_fn(config.loss)

@@ -16,6 +16,8 @@ from glob import glob
 from music2latent import EncoderDecoder
 import time
 
+from oplas.data import MTGJamendoStream
+
 def memory_usage():
     process = psutil.Process(os.getpid())
     mem_bytes = process.memory_info().rss  # Resident Set Size
@@ -59,19 +61,19 @@ print(f"Total VRAM: {total_memory_gb:.2f} GB")
 mem_batch_size = 1
 # v100
 if total_memory_gb < 4:
-    mem_batch_size = 3
+    mem_batch_size = 2
 elif total_memory_gb < 8:
-    mem_batch_size = 6
+    mem_batch_size = 4
 elif total_memory_gb < 11:
-    mem_batch_size = 8
+    mem_batch_size = 6
 elif total_memory_gb < 16:
-    mem_batch_size = 12
+    mem_batch_size = 8
 elif total_memory_gb < 32:
-    mem_batch_size = 24
+    mem_batch_size = 12
 elif total_memory_gb < 48:
-    mem_batch_size = 36
+    mem_batch_size = 16
 elif total_memroy_gb < 80:
-    mem_batch_szie = 60
+    mem_batch_size = 24
 
 
 
@@ -80,28 +82,35 @@ encdec = EncoderDecoder()
 
 data_dir = "/scratch/users/nshaheed/mtg-jamendo/"
 save_file = "/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz"
-dataset = SongDataset(data_dir)
+# dataset = SongDataset(data_dir)
+dataset = MTGJamendoStream()
 
 dataloader = DataLoader(dataset, batch_size=1,
-                        shuffle=False, num_workers=8)
+                        shuffle=False, num_workers=4)
 
 progress = tqdm(dataloader)
 
 latents = {}
+audios = []
 
 total_time = time.time()
 
-for song, path in progress:
+for song in progress:
     song = song.squeeze()
-    path = path[0]
+    # path = path[0]
 
     # waveform, sr = librosa.load(song, sr=sample_rate)
 
+    print(f'{song.shape=}')
+
     # start = time.time()
-    latent = encdec.encode(song, max_waveform_length=44100*6, max_batch_size=mem_batch_size)
+    # latent = encdec.encode(song, max_waveform_length=44100*6, max_batch_size=mem_batch_size)
     # print(f'encoding: {time.time() - start:.2f}s')
 
-    latents[path] = latent.cpu().detach().numpy()
+    # latents[path] = latent.cpu().detach().numpy()
+
+    audios.append(song)
+    # print(len(audios))
 
     # save to file
 

@@ -90,3 +90,12 @@ def mix_and_encode(stems_full, encoder, static_mix=False, debug=False):
         ys.append(y)
     y_mix = encoder.forward(m["g_mix"])
     return m | {"ys": ys, "y_mix": y_mix}
+
+def mix_latents(stems, encoder, static_mix=False, debug=False):
+    """
+    Takes latents, re-encodes them to audio and mixes them
+    """
+    # stems: [batch, latents, time]
+
+    # breakpoint()
+    stems_audio = encoder.decode(stems, max_waveform_length=44100*6, max_batch_size=2)

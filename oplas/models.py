@@ -355,18 +355,20 @@ class Music2Latent(nn.Module):
         super().__init__()
         # self.sample_rate =
         self.encdec = EncoderDecoder()
+        self.device = self.encdec.device
 
     @torch.no_grad()
     def encode(self, audio):
         # m2l needs mono audio (I think)
+        breakpoint()
         audio = torch.mean(audio, dim=-1)
         encodings = self.encdec.encode(audio)
 
         return encodings
 
     @torch.no_grad()
-    def decode(self, latent):
-        return self.encdec.decode(latent)
+    def decode(self, latent, max_batch_size=None, max_waveform_length=None):
+        return self.encdec.decode(latent, max_batch_size=max_batch_size, max_waveform_length=max_waveform_length)
 
     def forward(self, audio):
         return self.encode(audio)

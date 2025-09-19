@@ -7,6 +7,7 @@ from functools import partial
 from glob import glob
 import sys
 
+import soundfile as sf
 import numpy as np
 import stempeg
 import torch
@@ -134,6 +135,59 @@ class RandomMixDataset(IterableDataset):
                     self.probs = [p / total for p in self.probs]
 
 
+
+
+class MTGJamendo(Dataset):
+    """Loads pre-encoded audio files from a .npz file.
+
+    While the previous approach involved loading equal-sized chunks
+    from several audio files, this dataset will preload everything
+    in-memory and then only return the chunk from one audio file.
+
+    """
+    def __init__(
+        self,
+        data_file="/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz",
+        chunk_size=65,
+        load_frac=1.0,
+        # augment=False,
+        debug=False,
+    ):
+        self.load_frac = load_frac # not doing anything with this atm
+        self.chunk_size = chunk_size
+        self.data = np.load(data_file)
+        self.keys = list(self.data.keys())
+        self.debug = debug
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        if self.debug is True:
+            print(f"{len(self.songs_listed)=}")
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            # Single-process data loading
+            seed = random.randint(0, 2**32 - 1)
+        else:
+            # Unique seed per worker
+            seed = worker_info.seed
+
+        np.random.seed(seed % (2**32 - 1))
+        torch.manual_seed(seed)
+        rng = random.Random(seed)
+
+        key = self.keys[idx]
+        value = self.data[key]
+
+        value = torch.from_numpy(value)
+
+        start = rng.randint(0, value.shape[-1] - self.chunk_size)
+        chunk = value[:,:,start:start+self.chunk_size]
+
+        return chunk[0]
+
+
 class MTGJamendoStream(IterableDataset):
     def __init__(
         self,
@@ -194,6 +248,7 @@ class MTGJamendoStream(IterableDataset):
                 song_idx = rng.randint(0, len(self.songs_listed) - 1)
                 song_path = self.songs_listed[song_idx]
 
+                # ----- without sf ----
                 info = torchaudio.info(song_path)
                 file_sr = info.sample_rate
                 file_frames = info.num_frames
@@ -213,12 +268,45 @@ class MTGJamendoStream(IterableDataset):
                     frame_offset=start_frame,
                     num_frames=chunk_size_file,
                     channels_first=False,
+                    backend='soundfile',
                 )
 
                 # waveform = waveform[0] # get first channel
                 if sr != self.sample_rate:
                     resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
                     waveform = resampler(waveform)
+                # ----- without sf ----
+
+                ## try with sf
+                # info = sf.info(song_path)
+                # samplerate = info.samplerate
+                # duration = info.duration
+                # length = int(samplerate*duration)
+                # chunk_size_file = int(chunk_size_dur * samplerate) + samplerate
+
+                # rand_start = torch.randint(length-chunk_size_file, size=(1,)).item()
+                # wv,_ = sf.read(song_path, frames=chunk_size_file, start=rand_start, stop=None, dtype='float32', always_2d=True)
+                # wv = torch.from_numpy(wv)
+                # if wv.shape[-1]==1:
+                #     wv = torch.cat([wv,wv], dim=1)
+                # wv = wv[:,:2]
+                # wv = wv.permute(1,0)
+
+                # # if not stereo:
+                # wv = wv[torch.randint(wv.shape[0], size=(1,)).item(),:]
+                    
+                # # rms = torch.sqrt(torch.mean(wv**2))
+                # # if rms < self.rms_min:
+                # #     idx = torch.randint(self.tot_samples, size=(1,)).item()
+                # #     return self.__getitem__(idx)
+                # ## -----------
+                # # return wv
+                
+                # # TODO actually handle things properly
+                # # breakpoint()
+                # wv = wv[:self.chunk_size]
+                # stems.append(wv)
+                # continue
 
                 waveform = waveform[
                     : self.chunk_size, :
@@ -850,16 +938,20 @@ def build_vggish_stemlike(data_dir="/data/05-03_VGGish_1min_Encodings"):
 if __name__ == "__main__":
     import sys
 
-    # test MTGJamendoStream
-    mtg = MTGJamendoStream()
-    stemcnk = StemChunkStream(data_dir="/scratch/users/nshaheed/musdb18")
-    chain = ChainDataset([mtg, stemcnk])
+    # test MTGJamendo
+    mtg = MTGJamendo()
+    next(iter(mtg))
 
-    result = next(iter(mtg))
-    result_cnk = next(iter(stemcnk))
-    result1 = next(iter(chain))
-    result2 = next(iter(chain))
-    breakpoint()
+    # test MTGJamendoStream
+    # mtg = MTGJamendoStream()
+    # stemcnk = StemChunkStream(data_dir="/scratch/users/nshaheed/musdb18")
+    # chain = ChainDataset([mtg, stemcnk])
+
+    # result = next(iter(mtg))
+    # result_cnk = next(iter(stemcnk))
+    # result1 = next(iter(chain))
+    # result2 = next(iter(chain))
+    # breakpoint()
 
     # only need to run the following once:
     # build_vggish_stemlike()
