@@ -1,6 +1,7 @@
 from pathlib import Path
 import torch
 
+
 def save_model(
     model, step, optimizer, scheduler, loss, run_id, save_dir="./checkpoints"
 ):
@@ -22,7 +23,6 @@ def save_model(
         save_path,
     )
     return save_path
-
 
 
 def get_scheduler(opt, config):

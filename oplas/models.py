@@ -367,7 +367,11 @@ class Music2Latent(nn.Module):
 
     @torch.no_grad()
     def decode(self, latent, max_batch_size=None, max_waveform_length=None):
-        return self.encdec.decode(latent, max_batch_size=max_batch_size, max_waveform_length=max_waveform_length)
+        return self.encdec.decode(
+            latent,
+            max_batch_size=max_batch_size,
+            max_waveform_length=max_waveform_length,
+        )
 
     def forward(self, audio):
         return self.encode(audio)

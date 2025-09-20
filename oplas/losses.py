@@ -17,7 +17,6 @@ def get_loss_fn(val):
     return loss_fn
 
 
-
 def pseudo_huber(l1, l2, c=0.03):
     """
     Pseudo_huber loss as used in the music2latent paper.

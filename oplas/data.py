@@ -135,8 +135,6 @@ class RandomMixDataset(IterableDataset):
                     self.probs = [p / total for p in self.probs]
 
 
-
-
 class MTGJamendo(Dataset):
     """Loads pre-encoded audio files from a .npz file.
 
@@ -145,6 +143,7 @@ class MTGJamendo(Dataset):
     in-memory and then only return the chunk from one audio file.
 
     """
+
     def __init__(
         self,
         data_file="/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz",
@@ -153,7 +152,7 @@ class MTGJamendo(Dataset):
         # augment=False,
         debug=False,
     ):
-        self.load_frac = load_frac # not doing anything with this atm
+        self.load_frac = load_frac  # not doing anything with this atm
         self.chunk_size = chunk_size
         self.data = np.load(data_file)
         self.keys = list(self.data.keys())
@@ -183,7 +182,7 @@ class MTGJamendo(Dataset):
         value = torch.from_numpy(value)
 
         start = rng.randint(0, value.shape[-1] - self.chunk_size)
-        chunk = value[:,:,start:start+self.chunk_size]
+        chunk = value[:, :, start : start + self.chunk_size]
 
         return chunk[0]
 
@@ -196,6 +195,7 @@ class MTGJamendoStreamSingle(Dataset):
     in-memory and then only return the chunk from one audio file.
 
     """
+
     def __init__(
         self,
         data_dir="/scratch/users/nshaheed/mtg-jamendo",
@@ -220,15 +220,17 @@ class MTGJamendoStreamSingle(Dataset):
 
         self.song_metadata = []
         get_metadata = tqdm(self.songs_listed)
-        get_metadata.set_description('loading audio metadata')
+        get_metadata.set_description("loading audio metadata")
         for path in get_metadata:
             info = sf.info(path)
-            self.song_metadata.append({
-                'path': path,
-                'samplerate': info.samplerate,
-                'duration': info.duration,
-                'num_samples': int(info.samplerate * info.duration),
-            })
+            self.song_metadata.append(
+                {
+                    "path": path,
+                    "samplerate": info.samplerate,
+                    "duration": info.duration,
+                    "num_samples": int(info.samplerate * info.duration),
+                }
+            )
 
     def __len__(self):
         return len(self.songs_listed)
@@ -246,33 +248,40 @@ class MTGJamendoStreamSingle(Dataset):
 
         song_path = self.songs_listed[idx]
         info = self.song_metadata[idx]
-        samplerate = info['samplerate']
-        duration = info['duration']
-        length = int(samplerate*duration)
+        samplerate = info["samplerate"]
+        duration = info["duration"]
+        length = int(samplerate * duration)
         chunk_size_dur = self.chunk_size / self.sample_rate
         chunk_size_file = int(chunk_size_dur * samplerate) + samplerate
 
-        rand_start = torch.randint(length-chunk_size_file, size=(1,)).item()
-        wv,_ = sf.read(song_path, frames=chunk_size_file, start=rand_start, stop=None, dtype='float32', always_2d=True)
+        rand_start = torch.randint(length - chunk_size_file, size=(1,)).item()
+        wv, _ = sf.read(
+            song_path,
+            frames=chunk_size_file,
+            start=rand_start,
+            stop=None,
+            dtype="float32",
+            always_2d=True,
+        )
         wv = torch.from_numpy(wv)
-        if wv.shape[-1]==1:
-            wv = torch.cat([wv,wv], dim=1)
-        wv = wv[:,:2]
-        wv = wv.permute(1,0)
+        if wv.shape[-1] == 1:
+            wv = torch.cat([wv, wv], dim=1)
+        wv = wv[:, :2]
+        wv = wv.permute(1, 0)
 
         # if not stereo:
-        wv = wv[torch.randint(wv.shape[0], size=(1,)).item(),:]
-                    
+        wv = wv[torch.randint(wv.shape[0], size=(1,)).item(), :]
+
         # rms = torch.sqrt(torch.mean(wv**2))
         # if rms < self.rms_min:
         #     idx = torch.randint(self.tot_samples, size=(1,)).item()
         #     return self.__getitem__(idx)
         ## -----------
         # return wv
-                
+
         # TODO actually handle things properly
         # breakpoint()
-        wv = wv[:self.chunk_size]
+        wv = wv[: self.chunk_size]
         return wv
 
 
@@ -369,30 +378,37 @@ class MTGJamendoStream(IterableDataset):
                 info = sf.info(song_path)
                 samplerate = info.samplerate
                 duration = info.duration
-                length = int(samplerate*duration)
+                length = int(samplerate * duration)
                 chunk_size_file = int(chunk_size_dur * samplerate) + samplerate
 
-                rand_start = torch.randint(length-chunk_size_file, size=(1,)).item()
-                wv,_ = sf.read(song_path, frames=chunk_size_file, start=rand_start, stop=None, dtype='float32', always_2d=True)
+                rand_start = torch.randint(length - chunk_size_file, size=(1,)).item()
+                wv, _ = sf.read(
+                    song_path,
+                    frames=chunk_size_file,
+                    start=rand_start,
+                    stop=None,
+                    dtype="float32",
+                    always_2d=True,
+                )
                 wv = torch.from_numpy(wv)
-                if wv.shape[-1]==1:
-                    wv = torch.cat([wv,wv], dim=1)
-                wv = wv[:,:2]
-                wv = wv.permute(1,0)
+                if wv.shape[-1] == 1:
+                    wv = torch.cat([wv, wv], dim=1)
+                wv = wv[:, :2]
+                wv = wv.permute(1, 0)
 
                 # if not stereo:
-                wv = wv[torch.randint(wv.shape[0], size=(1,)).item(),:]
-                    
+                wv = wv[torch.randint(wv.shape[0], size=(1,)).item(), :]
+
                 # rms = torch.sqrt(torch.mean(wv**2))
                 # if rms < self.rms_min:
                 #     idx = torch.randint(self.tot_samples, size=(1,)).item()
                 #     return self.__getitem__(idx)
                 ## -----------
                 # return wv
-                
+
                 # TODO actually handle things properly
                 # breakpoint()
-                wv = wv[:self.chunk_size]
+                wv = wv[: self.chunk_size]
                 stems.append(wv)
                 continue
 

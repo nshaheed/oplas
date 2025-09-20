@@ -18,12 +18,15 @@ import time
 
 from oplas.data import MTGJamendoStream, MTGJamendoStreamSingle
 
+
 def memory_usage():
     process = psutil.Process(os.getpid())
     mem_bytes = process.memory_info().rss  # Resident Set Size
-    return mem_bytes / (1024 ** 3)  # Convert to MB
+    return mem_bytes / (1024**3)  # Convert to MB
+
 
 # load audio in dataset
+
 
 class SongDataset(Dataset):
     def __init__(self, data_dir, sample_rate=44100):
@@ -77,8 +80,6 @@ elif total_memroy_gb < 80:
     mem_batch_size = 24
 
 
-
-
 encdec = EncoderDecoder()
 
 data_dir = "/scratch/users/nshaheed/mtg-jamendo-wav/"
@@ -88,8 +89,7 @@ save_file = "/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz"
 # dataset = SongDataset(data_dir)
 dataset = MTGJamendoStreamSingle(data_dir=data_dir, load_frac=0.1)
 
-dataloader = DataLoader(dataset, batch_size=1,
-                        shuffle=False, num_workers=8)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=8)
 
 progress = tqdm(dataloader, smoothing=0)
 
@@ -120,6 +120,6 @@ for song in progress:
     # print(f'total time: {time.time() - total_time:.2f}s')
     # total_time = time.time()
 
-    progress.set_postfix(mem=f'{memory_usage():.2f}GB')
+    progress.set_postfix(mem=f"{memory_usage():.2f}GB")
 
 # np.savez(save_file, **latents)

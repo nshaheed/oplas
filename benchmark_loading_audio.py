@@ -6,10 +6,12 @@ from glob import glob
 
 import psutil
 
+
 def memory_usage():
     process = psutil.Process(os.getpid())
     mem_bytes = process.memory_info().rss  # Resident Set Size
-    return mem_bytes / (1024 ** 3)  # Convert to MB
+    return mem_bytes / (1024**3)  # Convert to MB
+
 
 def load_audio_files(directory, max_duration=30.0):
     """Load the first `max_duration` seconds of audio files in a directory using soundfile."""
@@ -35,21 +37,30 @@ def load_audio_files(directory, max_duration=30.0):
         except RuntimeError as e:
             tqdm.write(f"Skipping {filename}: {e}")
 
-        progress.set_postfix(mem=f'{memory_usage():.2f}GB')
+        progress.set_postfix(mem=f"{memory_usage():.2f}GB")
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
 
-    print(f"\nLoaded {len(audio_data)} audio files (up to {max_duration}s each) in {elapsed_time:.3f} seconds")
+    print(
+        f"\nLoaded {len(audio_data)} audio files (up to {max_duration}s each) in {elapsed_time:.3f} seconds"
+    )
     return audio_data
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Benchmark loading audio files with soundfile (first N seconds).")
+    parser = argparse.ArgumentParser(
+        description="Benchmark loading audio files with soundfile (first N seconds)."
+    )
     parser.add_argument("directory", help="Path to directory containing audio files")
-    parser.add_argument("--duration", type=float, default=30.0, help="Max duration (seconds) to load per file")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=30.0,
+        help="Max duration (seconds) to load per file",
+    )
     args = parser.parse_args()
 
     load_audio_files(args.directory, max_duration=args.duration)
