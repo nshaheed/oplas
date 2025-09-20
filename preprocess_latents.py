@@ -89,7 +89,11 @@ save_file = "/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz"
 # dataset = SongDataset(data_dir)
 dataset = MTGJamendoStreamSingle(data_dir=data_dir, load_frac=0.1)
 
-dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=8)
+dataloader = DataLoader(dataset, 
+                        batch_size=64, num_workers=2, pin_memory=True,
+                        drop_last=True, shuffle=True, persistent_workers=True, 
+                        prefetch_factor=16,
+)
 
 progress = tqdm(dataloader, smoothing=0)
 
@@ -99,7 +103,7 @@ audios = []
 total_time = time.time()
 
 for song in progress:
-    song = song.squeeze()
+    # song = song.squeeze()
     # path = path[0]
 
     # waveform, sr = librosa.load(song, sr=sample_rate)

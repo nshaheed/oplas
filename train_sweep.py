@@ -29,6 +29,69 @@ from oplas.models import Music2Latent, Projector, ProjectorVAE, VAE
 from oplas.helper import save_model, get_scheduler
 
 
+
+def calculate_losses(projector, mixes, config, step=0):
+    """
+    Pass data through projector and calculate losses
+    """
+    
+    # full audio mix
+    y_mix = mixes["y_mix"].to(torch.float32)
+    z_mix, y_hat_mix, *params_mix = projector(y_mix.permute(0, 2, 1))
+    z_mix = z_mix.permute(0, 2, 1)
+    y_hat_mix = y_hat_mix.permute(0, 2, 1)
+
+    # stems
+    ys_tensor = torch.stack(mixes["ys"], dim=0).to(torch.float32)
+    ys_permuted = ys_tensor.permute(0, 1, 3, 2)
+    z_stems, y_hats, *params_stems = projector(ys_permuted)
+
+    # z-space projection mix
+    z_sum_decoded = torch.sum(z_stems, dim=1)
+    y_sum = projector.decode(z_sum_decoded).permute(0, 2, 1)
+    z_sum = z_sum_decoded.permute(0, 2, 1).contiguous()
+    y_hats = y_hats.permute(0, 1, 3, 2)
+
+    # losses
+    loss_fn = get_loss_fn(config.loss)
+    vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
+    y_loss = loss_fn(ys_tensor, y_hats)
+    y_mix_loss = loss_fn(y_mix, y_hat_mix)
+    sum_loss = loss_fn(y_mix, y_sum)
+
+    kld_loss = torch.tensor(0, device=z_mix.device)
+    if config.arch == "vae":
+        mu, logvar = params_stems
+        kld_loss = kld(mu, logvar, step, config.kld_warmup)
+
+    var_loss = config.var_coeff * vicreg_loss["var_loss"]
+    inv_loss = loss_fn(z_mix, z_sum)
+    cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
+
+    total_loss = (
+        var_loss
+        + inv_loss
+        + cov_loss
+        + y_loss
+        + y_mix_loss
+        + sum_loss
+        + kld_loss
+    )
+
+    # returns loss dictionary and z_sum
+    return {
+        "total_loss": total_loss,
+        "var_loss": var_loss,
+        "inv_loss": inv_loss,
+        "cov_loss": cov_loss,
+        "y_loss": y_loss,
+        "y_mix_loss": y_mix_loss,
+        "sum_loss": sum_loss,
+        "kld_loss": kld_loss,
+        "recon_loss": y_mix_loss + y_loss + inv_loss + sum_loss,
+    }, z_sum
+
+
 @torch.no_grad()
 def validate(projector, device, val_dl, encoder, config, step=None):
     """Validation function, slightly simplified for clarity."""
@@ -47,59 +110,25 @@ def validate(projector, device, val_dl, encoder, config, step=None):
 
     # --- Your validation logic remains the same ---
     mixes = mix_single(batch, encoder, debug=False)
-    y_mix = mixes["y_mix"].float()
-    z_sum = None
 
-    z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
-    z_mix = z_mix.permute(0, 2, 1)
-    y_hat_mix = y_hat_mix.permute(0, 2, 1)
+    # Call the new centralized loss function
+    loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
 
-    ys_tensor = torch.stack(mixes["ys"], dim=0).to(torch.float32)
-    B, S, D, T = ys_tensor.shape
-    ys_permuted = ys_tensor.permute(0, 1, 3, 2)
-    z_stems, y_hats, *params = projector(ys_permuted)
-
-    z_sum = torch.sum(z_stems, dim=1)  # Sum over stems dimension
-    y_sum = projector.decode(z_sum).permute(0, 2, 1)
-    z_sum = z_sum.permute(0, 2, 1).contiguous()
-    y_hats = y_hats.permute(0, 1, 3, 2)
-
-    loss_fn = get_loss_fn(config.loss)
-    vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-    y_loss = loss_fn(ys_tensor, y_hats)
-    y_mix_loss = loss_fn(y_mix, y_hat_mix)
-    sum_loss = loss_fn(y_mix, y_sum)
-
-    kld_loss = 0
-    if config.arch == "vae":
-        mu, logvar = params
-        kld_loss = kld(mu, logvar, step, config.kld_warmup)
-
-    var_loss = config.var_coeff * vicreg_loss["var_loss"]
-    # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
-    inv_loss = loss_fn(z_mix, z_sum)
-    cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
-
-    loss = var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss + kld_loss
-
-    # testing z_sum back to y_sum
-
+    loss = loss_dict["total_loss"]
     log = {
-        "val/loss": loss.detach(),
-        "val/var_loss": var_loss.detach(),
-        "val/inv_loss": inv_loss.detach(),
-        "val/cov_loss": cov_loss.detach(),
-        "val/y_loss": y_loss.detach(),
-        "val/y_mix_loss": y_mix_loss.detach(),
-        "val/sum_loss": sum_loss.detach(),
-        "val/recon_loss": y_mix_loss.item()
-        + y_loss.item()
-        + inv_loss.item()
-        + sum_loss.item(),
+        "val/loss": loss_dict["total_loss"].detach(),
+        "val/var_loss": loss_dict["var_loss"].detach(),
+        "val/inv_loss": loss_dict["inv_loss"].detach(),
+        "val/cov_loss": loss_dict["cov_loss"].detach(),
+        "val/y_loss": loss_dict["y_loss"].detach(),
+        "val/y_mix_loss": loss_dict["y_mix_loss"].detach(),
+        "val/sum_loss": loss_dict["sum_loss"].detach(),
+        "val/recon_loss": loss_dict["recon_loss"].item(),
     }
 
     if config.arch == "vae":
-        log = log | {"val/kld_loss": kld_loss.item()}
+        log = log | {"val/kld_loss": loss_dict["kld_loss"].item()}
+
 
     # actually generate some audio examples
     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
@@ -115,7 +144,6 @@ def validate(projector, device, val_dl, encoder, config, step=None):
         ),
         "val/0/orig": wandb.Audio(
             mixes["g_mix"][0].cpu(),
-            # batch[0, 0, :, 0].cpu(),
             caption="original mix",
             sample_rate=44100,
         ),
@@ -126,7 +154,6 @@ def validate(projector, device, val_dl, encoder, config, step=None):
         ),
         "val/1/orig": wandb.Audio(
             mixes["g_mix"][1].cpu(),
-            # batch[1, 0, :, 0].cpu(),
             caption="original mix",
             sample_rate=44100,
         ),
@@ -137,7 +164,6 @@ def validate(projector, device, val_dl, encoder, config, step=None):
         ),
         "val/2/orig": wandb.Audio(
             mixes["g_mix"][2].cpu(),
-            # batch[2, 0, :, 0].cpu(),
             caption="original mix",
             sample_rate=44100,
         ),
@@ -232,10 +258,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     if test:
         # for debugging on sh_dev
         train_dl = DataLoader(  # do 12 workers?
-            mtg_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+            mtg_dataset, batch_size=config.batch_size, num_workers=3, pin_memory=True,
+            drop_last=True, shuffle=True, persistent_workers=True, prefetch_factor=16,
         )
         val_dl = DataLoader(
-            mtg_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True
+            mtg_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True,
+            drop_last=True, shuffle=True,
         )
     else:
         train_dl = DataLoader(  # do 12 workers?
@@ -280,11 +308,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             if step >= config.max_steps and not ignore_max_steps:
                 break
 
-            if batch.shape[0] < config.batch_size:
-                # this will only appear when we reach the end of the dataset
-                # ignore, because we need to have the batch divide cleanly into
-                # config.num_stems. It's not worth the effort
-                continue  # just skip for now
             batch = batch.to(device)
             # batch = torch.rand_like(batch)
             opt.zero_grad()
@@ -305,57 +328,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 if not test:
                     mixes = mix_single(batch, encoder, static_mix=test, debug=False)
 
-            y_mix = mixes["y_mix"].to(torch.float32)
-
             print(f"Encoding time:     {time.time() - encoding_time:.05f}s")
 
             processing_time = time.time()
+            loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
 
-            # Vectorized projection logic (more efficient)
-            z_mix, y_hat_mix, *params = projector(y_mix.permute(0, 2, 1))
-            z_mix = z_mix.permute(0, 2, 1)
-            y_hat_mix = y_hat_mix.permute(0, 2, 1)
-
-            # TODO validate
-            ys_tensor = torch.stack(mixes["ys"], dim=0).to(torch.float32)
-            B, S, D, T = ys_tensor.shape
-            ys_permuted = ys_tensor.permute(0, 1, 3, 2)
-            z_stems, y_hats, *params = projector(ys_permuted)
-            # z_stems = z_stems_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
-            # y_hats_tensor = y_hats_flat.reshape(B, S, T, D).permute(0, 1, 3, 2)
-            z_sum = torch.sum(z_stems, dim=1)
-            y_sum = projector.decode(z_sum).permute(0, 2, 1)
-            z_sum = z_sum.permute(0, 2, 1).contiguous()
-            y_hats = y_hats.permute(0, 1, 3, 2)
-
-            # --- Loss Calculation ---
-            vicreg_loss = vicreg_loss_fn(z_sum, z_mix)
-            y_loss = loss_fn(ys_tensor, y_hats)
-            y_mix_loss = loss_fn(y_mix, y_hat_mix)
-            sum_loss = loss_fn(y_mix, y_sum)
-
-            kld_loss = torch.tensor(0)
-            if config.arch == "vae":
-                mu, logvar = params
-                kld_loss = kld(mu, logvar, step, config.kld_warmup)
-
-            var_loss = config.var_coeff * vicreg_loss["var_loss"]
-            # inv_loss = config.inv_coeff * vicreg_loss["inv_loss"]
-            inv_loss = loss_fn(z_mix, z_sum)
-            cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
-
-            loss = (
-                var_loss
-                + inv_loss
-                + cov_loss
-                + y_loss
-                + y_mix_loss
-                + sum_loss
-                + kld_loss
-            )
-
-            loss = y_mix_loss
-
+            loss = loss_dict["total_loss"]
             loss.backward()
             opt.step()
             if scheduler:
@@ -364,30 +342,27 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             print(f"Processing time:   {time.time() - processing_time:.05f}s")
 
             # --- Logging ---
-            # tbatch.set_postfix(loss=loss.item(), sum_loss=sum_loss.item())
+            tbatch.set_postfix(loss=loss.item(), sum_loss=loss_dict['sum_loss'].item())
             log_dict = {
-                "train/loss": loss.item(),
-                "train/var_loss": var_loss.item(),
-                "train/inv_loss": inv_loss.item(),
-                "train/cov_loss": cov_loss.item(),
-                "train/y_loss": y_loss.item(),
-                "train/y_mix_loss": y_mix_loss.item(),
-                "train/sum_loss": sum_loss.detach(),
-                "train/recon_loss": y_mix_loss.item()
-                + y_loss.item()
-                + inv_loss.item()
-                + sum_loss.item(),
+                "train/loss": loss.item(), # Log the loss that was backpropagated
+                "train/var_loss": loss_dict["var_loss"].item(),
+                "train/inv_loss": loss_dict["inv_loss"].item(),
+                "train/cov_loss": loss_dict["cov_loss"].item(),
+                "train/y_loss": loss_dict["y_loss"].item(),
+                "train/y_mix_loss": loss_dict["y_mix_loss"].item(),
+                "train/sum_loss": loss_dict["sum_loss"].detach(),
+                "train/recon_loss": loss_dict["recon_loss"].item(),
             }
 
             if config.arch == "vae":
-                log_dict = log_dict | {"train/kld_loss": kld_loss.item()}
+                log_dict = log_dict | {"train/kld_loss": loss_dict["kld_loss"].item()}
 
             if scheduler:
                 log_dict = log_dict | {
                     "train/learning_rate": scheduler.get_last_lr()[0]
                 }
 
-            if step % config.val_every == 0:
+            if step % config.val_every == 0 and False:
                 latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
                 latent = latent.permute(0, 2, 1)  # have to swap it back
                 audio = encoder.decode(latent).cpu()
@@ -400,7 +375,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                     ),
                     "train/0/orig": wandb.Audio(
                         mixes["g_mix"][0].cpu(),
-                        # batch[0, 0, :, 0].cpu(),
                         caption="original mix",
                         sample_rate=44100,
                     ),
@@ -411,7 +385,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                     ),
                     "train/1/orig": wandb.Audio(
                         mixes["g_mix"][1].cpu(),
-                        # batch[1, 0, :, 0].cpu(),
                         caption="original mix",
                         sample_rate=44100,
                     ),
@@ -422,7 +395,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                     ),
                     "train/2/orig": wandb.Audio(
                         mixes["g_mix"][2].cpu(),
-                        # batch[2, 0, :, 0].cpu(),
                         caption="original mix",
                         sample_rate=44100,
                     ),
