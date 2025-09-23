@@ -22,6 +22,7 @@ from oplas.data import (
     StemChunkStream,
     MTGJamendoStreamSingle,
     RandomMixDataset,
+    MTGJamendoCache,
 )
 from oplas.losses import vicreg_loss_fn, get_loss_fn, kld
 from oplas.mixing import mix_and_encode, mix_single
@@ -29,12 +30,11 @@ from oplas.models import Music2Latent, Projector, ProjectorVAE, VAE
 from oplas.helper import save_model, get_scheduler
 
 
-
 def calculate_losses(projector, mixes, config, step=0):
     """
     Pass data through projector and calculate losses
     """
-    
+
     # full audio mix
     y_mix = mixes["y_mix"].to(torch.float32)
     z_mix, y_hat_mix, *params_mix = projector(y_mix.permute(0, 2, 1))
@@ -59,7 +59,8 @@ def calculate_losses(projector, mixes, config, step=0):
     y_mix_loss = loss_fn(y_mix, y_hat_mix)
     sum_loss = loss_fn(y_mix, y_sum)
 
-    kld_loss = torch.tensor(0, device=z_mix.device)
+    # kld_loss = torch.tensor(0, device=z_mix.device)
+    kld_loss = 0
     if config.arch == "vae":
         mu, logvar = params_stems
         kld_loss = kld(mu, logvar, step, config.kld_warmup)
@@ -69,13 +70,7 @@ def calculate_losses(projector, mixes, config, step=0):
     cov_loss = config.cov_coeff * vicreg_loss["cov_loss"]
 
     total_loss = (
-        var_loss
-        + inv_loss
-        + cov_loss
-        + y_loss
-        + y_mix_loss
-        + sum_loss
-        + kld_loss
+        var_loss + inv_loss + cov_loss + y_loss + y_mix_loss + sum_loss + kld_loss
     )
 
     # returns loss dictionary and z_sum
@@ -96,39 +91,67 @@ def calculate_losses(projector, mixes, config, step=0):
 def validate(projector, device, val_dl, encoder, config, step=None):
     """Validation function, slightly simplified for clarity."""
     projector.eval()  # Set model to evaluation mode
-    vbatch_iter = iter(val_dl)
-    try:
-        batch = next(vbatch_iter).to(device)
-    except StopIteration:
-        print("Validation dataloader is empty.")
-        return {}
+    # vbatch_iter = iter(val_dl)
+    # try:
+    #     batch = next(vbatch_iter).to(device)
+    # except StopIteration:
+    #     print("Validation dataloader is empty.")
+    #     return {}
 
-    # resize batch so that it has shape [batch, num_stems, latent, time]
-    b, t = batch.shape
-    s = config.num_stems
-    batch = batch.view(b // s, s, t)
+    losses = []
+    z_sum = None
 
-    # --- Your validation logic remains the same ---
-    mixes = mix_single(batch, encoder, debug=False)
+    tbatch = tqdm(
+        val_dl,
+        unit="batch",
+        desc="validating",
+        smoothing=0,
+    )
+    for batch in tbatch:
+        # resize batch so that it has shape [batch, num_stems, latent, time]
+        b, t = batch.shape
+        s = config.num_stems
+        batch = batch.view(b // s, s, t)
 
-    # Call the new centralized loss function
-    loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
+        # randomly scale and mix and return latents
+        mixes = mix_single(batch, encoder, static_mix=False, debug=False)
 
-    loss = loss_dict["total_loss"]
+        # Call the new centralized loss function
+        loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
+
+        losses.append(loss_dict)
+
+    # take average of losses
+    loss_avg = {}
+
+    # breakpoint()
+    # sum losses
+    for loss_dict in losses:
+        for key, value in loss_dict.items():
+            if key in loss_avg:
+                loss_avg[key] += value
+            else:
+                loss_avg[key] = value
+
+    # breakpoint()
+    # calc mean
+    for key, value in loss_avg.items():
+        loss_avg[key] = value / len(losses)
+
+    loss = loss_avg["total_loss"]
     log = {
-        "val/loss": loss_dict["total_loss"].detach(),
-        "val/var_loss": loss_dict["var_loss"].detach(),
-        "val/inv_loss": loss_dict["inv_loss"].detach(),
-        "val/cov_loss": loss_dict["cov_loss"].detach(),
-        "val/y_loss": loss_dict["y_loss"].detach(),
-        "val/y_mix_loss": loss_dict["y_mix_loss"].detach(),
-        "val/sum_loss": loss_dict["sum_loss"].detach(),
-        "val/recon_loss": loss_dict["recon_loss"].item(),
+        "val/loss": loss_avg["total_loss"].detach(),
+        "val/var_loss": loss_avg["var_loss"].detach(),
+        "val/inv_loss": loss_avg["inv_loss"].detach(),
+        "val/cov_loss": loss_avg["cov_loss"].detach(),
+        "val/y_loss": loss_avg["y_loss"].detach(),
+        "val/y_mix_loss": loss_avg["y_mix_loss"].detach(),
+        "val/sum_loss": loss_avg["sum_loss"].detach(),
+        "val/recon_loss": loss_avg["recon_loss"].item(),
     }
 
     if config.arch == "vae":
-        log = log | {"val/kld_loss": loss_dict["kld_loss"].item()}
-
+        log = log | {"val/kld_loss": loss_avg["kld_loss"].item()}
 
     # actually generate some audio examples
     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
@@ -238,39 +261,60 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
     # --- Data Loading ---
     # train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
-    stems_dataset = StemChunkStream(
-        data_dir=config.data_dir,
-        # data_dir="/scratch/users/nshaheed/mtg-jamendo-wav/",
-        load_frac=config.load_frac,
-        augment=config.augment,
-    )
-    mtg_dataset = MTGJamendoStreamSingle(
-        data_dir="/scratch/users/nshaheed/mtg-jamendo-wav/",
-        augment=config.augment,
-        load_frac=0.01,
-        chunk_size=2**16,
-    )
-    train_dataset = RandomMixDataset([stems_dataset, mtg_dataset])
-    val_dataset = StemChunkStream(
-        data_dir=config.data_dir, subset="test", load_frac=config.load_frac
-    )
+    # stems_dataset = StemChunkStream(
+    #     data_dir=config.data_dir,
+    #     # data_dir="/scratch/users/nshaheed/mtg-jamendo-wav/",
+    #     load_frac=config.load_frac,
+    #     augment=config.augment,
+    # )
+    # mtg_dataset = MTGJamendoStreamSingle(
+    #     data_dir="/scratch/users/nshaheed/mtg-jamendo-wav/",
+    #     augment=config.augment,
+    #     load_frac=0.01,
+    #     chunk_size=2**16,
+    # )
+    mtg_dataset = MTGJamendoCache(num_chunks=config.num_chunks)
+    train_dataset, val_dataset = torch.utils.data.random_split(mtg_dataset, [0.8, 0.2])
+
+    # train_dataset = RandomMixDataset([stems_dataset, mtg_dataset])
+    # val_dataset = StemChunkStream(
+    #     data_dir=config.data_dir, subset="test", load_frac=config.load_frac
+    # )
 
     if test:
         # for debugging on sh_dev
         train_dl = DataLoader(  # do 12 workers?
-            mtg_dataset, batch_size=config.batch_size, num_workers=3, pin_memory=True,
-            drop_last=True, shuffle=True, persistent_workers=True, prefetch_factor=16,
+            mtg_dataset,
+            batch_size=config.batch_size,
+            num_workers=0,
+            pin_memory=True,
+            drop_last=True,
+            shuffle=True,
         )
         val_dl = DataLoader(
-            mtg_dataset, batch_size=config.batch_size, num_workers=0, pin_memory=True,
-            drop_last=True, shuffle=True,
+            mtg_dataset,
+            batch_size=config.batch_size,
+            num_workers=0,
+            pin_memory=True,
+            drop_last=True,
+            shuffle=True,
         )
     else:
         train_dl = DataLoader(  # do 12 workers?
-            train_dataset, batch_size=config.batch_size, num_workers=16, pin_memory=True
+            train_dataset,
+            batch_size=config.batch_size,
+            num_workers=0,
+            pin_memory=True,
+            drop_last=True,
+            shuffle=True,
         )
         val_dl = DataLoader(
-            val_dataset, batch_size=config.batch_size, num_workers=4, pin_memory=True
+            val_dataset,
+            batch_size=config.batch_size,
+            num_workers=0,
+            pin_memory=True,
+            drop_last=True,
+            shuffle=True,
         )
 
     # --- Training Loop ---
@@ -289,21 +333,23 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
     mixes = None
 
-    dataload_time = time.time()
-
     step = start_step
+    tbatch = tqdm(
+        initial=step,
+        total=config.max_steps,
+        unit="batch",
+        desc="training",
+        smoothing=0,
+    )
     while True:
-        tbatch = tqdm(
-            train_dl,
-            initial=step,
-            total=config.max_steps,
-            unit="batch",
-            desc="training",
-            smoothing=0,
-        )
-        for batch in tbatch:
-            print(f"Data loading time: {time.time() - dataload_time:.05f}s")
-            step = tbatch.n
+        if step >= config.max_steps and not ignore_max_steps:
+            break
+
+        dataload_start = time.time()
+        for batch in train_dl:
+            # print(f"Data loading time: {time.time() - dataload_time:.05f}s")
+            dataload_end = time.time() - dataload_start
+            # step = tbatch.n
             # step += 1
             if step >= config.max_steps and not ignore_max_steps:
                 break
@@ -321,16 +367,17 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             # if config.augment:
             #     batch = augment_effects(batch, sample_rate=44100)
 
-            encoding_time = time.time()
+            encoding_start = time.time()
             with torch.no_grad():
                 if test and mixes is None:
-                    mixes = mix_single(batch, encoder, static_mix=test, debug=False)
+                    mixes = mix_single(batch, encoder, static_mix=False, debug=False)
                 if not test:
-                    mixes = mix_single(batch, encoder, static_mix=test, debug=False)
+                    mixes = mix_single(batch, encoder, static_mix=False, debug=False)
 
-            print(f"Encoding time:     {time.time() - encoding_time:.05f}s")
+            # print(f"Encoding time:     {time.time() - encoding_time:.05f}s")
+            encoding_end = time.time() - encoding_start
 
-            processing_time = time.time()
+            processing_start = time.time()
             loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
 
             loss = loss_dict["total_loss"]
@@ -339,12 +386,15 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             if scheduler:
                 scheduler.step()
 
-            print(f"Processing time:   {time.time() - processing_time:.05f}s")
+            processing_end = time.time() - processing_start
+
+            # print(f"Processing time:   {time.time() - processing_time:.05f}s")
 
             # --- Logging ---
-            tbatch.set_postfix(loss=loss.item(), sum_loss=loss_dict['sum_loss'].item())
+            # tbatch.set_postfix(loss=loss.item(), sum_loss=loss_dict['sum_loss'].item())
+            logging_start = time.time()
             log_dict = {
-                "train/loss": loss.item(), # Log the loss that was backpropagated
+                "train/loss": loss.item(),  # Log the loss that was backpropagated
                 "train/var_loss": loss_dict["var_loss"].item(),
                 "train/inv_loss": loss_dict["inv_loss"].item(),
                 "train/cov_loss": loss_dict["cov_loss"].item(),
@@ -362,7 +412,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                     "train/learning_rate": scheduler.get_last_lr()[0]
                 }
 
-            if step % config.val_every == 0 and False:
+            if step % config.val_every == 0:
                 latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
                 latent = latent.permute(0, 2, 1)  # have to swap it back
                 audio = encoder.decode(latent).cpu()
@@ -407,7 +457,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
             run.log(log_dict)
 
-            if step % config.checkpoint_every == 0 and step > 0:
+            logging_end = time.time() - logging_start
+            tbatch.set_postfix(
+                d=dataload_end, e=encoding_end, p=processing_end, l=logging_end
+            )
+
+            if step % config.checkpoint_every == 0 and step > 0 and False:
                 checkpoint_path = save_model(
                     projector, step, opt, scheduler, loss, run.id
                 )
@@ -416,7 +471,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 artifact.add_file(local_path=checkpoint_path, name="model.pt")
                 run.log_artifact(artifact)
 
-            dataload_time = time.time()
+            step += 1
+            tbatch.update(1)
+            dataload_start = time.time()
+        # validation at end of epoch
 
 
 def main():
@@ -458,6 +516,7 @@ def main():
 
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_stems", type=int, default=8)
+    parser.add_argument("--num_chunks", type=int, default=10)
     parser.add_argument(
         "--data_dir", type=str, default="/scratch/users/nshaheed/musdb18"
     )
@@ -539,6 +598,7 @@ def main():
             "arch": args.arch,
             "kld_warmup": args.kld_warmup,
             "num_stems": args.num_stems,
+            "num_chunks": args.num_chunks,
         }
         with wandb.init(config=config) as run:
             train(

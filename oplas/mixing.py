@@ -84,8 +84,41 @@ def mix_stems_single(stems_in, static_mix=True, debug=False):
         g_mix = torch.sum(stems_in, dim=1)
         return {"g_stems": stems_in, "g_mix": g_mix}
 
-    # TODO make this work for non-static stems
-    pass
+    device = stems_in.device
+
+    # TODO randomly mute some of the tracks
+    # breakpoint()
+    B, S, T = stems_in.shape  # batch, stems, time, channels
+
+    # Choose uniform number of unmuted per batch
+    k = torch.randint(0, S + 1, (B,), device=device)
+
+    # Boolean mask with random number of tracks being muted.
+    # The masked tracks do not need to be shuffled because
+    # the batched data is already shuffled.
+    mask = torch.zeros((B, S), device=device, dtype=torch.float32)
+    arange = torch.arange(S, device=device).expand(B, S)
+    mask[arange < k.unsqueeze(1)] = 1.0
+    mask = mask.unsqueeze(-1)
+
+    stems_in = stems_in * mask  # apply mask
+
+    # TODO randomly apply gain
+    gains = torch.rand(B, S).unsqueeze(-1).to(device)
+    # gains = 2 * gains - 1
+
+    # scale to decibels
+    gains = gains * -36.0
+    gains = 10 ** (gains / 10.0)
+
+    stems_in = stems_in * gains
+
+    # TODO  analyze rms to adjust gain without worrying about clipping?
+    # I don't think this is a big issue because the random gains will generally lower things enough
+
+    # TODO randomly duplicate stems (need to capture doubling behavior!)
+    g_mix = torch.sum(stems_in, dim=1)
+    return {"g_stems": stems_in, "g_mix": g_mix}
 
 
 def mix_and_encode(stems_full, encoder, static_mix=False, debug=False):

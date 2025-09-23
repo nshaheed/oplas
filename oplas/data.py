@@ -285,6 +285,75 @@ class MTGJamendoStreamSingle(Dataset):
         return wv
 
 
+class MTGJamendoCache(Dataset):
+    """Loads pre-tensored, full audio files (generated with cache_audio.py)
+
+    This stores everything in-memory and should be very-fast
+
+    """
+
+    def __init__(
+        self,
+        data_dir="/scratch/users/nshaheed/mtg-jamendo-cache",
+        # data_dir="/scratch/nshaheed/mtg-jamendo",
+        chunk_size=2**18,
+        sample_rate=44100,
+        num_chunks=None,  # if None, load all
+        augment=False,
+        debug=False,
+    ):
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+        self.debug = debug
+        self.augment = augment
+
+        shard_paths = sorted(glob(os.path.join(data_dir, "cache_*.pt")))
+        if shard_paths:
+            print(f"Found {len(shard_paths)} shards in {data_dir}.")
+
+            # truncate
+            if num_chunks is not None:
+                shard_paths = shard_paths[:num_chunks]
+
+            print(f"Loading {len(shard_paths)} shard(s) from cache...")
+            tensors = []
+            paths = tqdm(shard_paths)
+            paths.set_description("loading shards")
+            for path in paths:
+                tensors.extend(torch.load(path))
+            self.songs = tensors
+        else:
+            print(f"No shards found in {data_dir}, Dataset will be empty")
+            self.songs = []
+
+    def __len__(self):
+        return len(self.songs)
+
+    def __getitem__(self, idx):
+        if self.debug is True:
+            print(f"{len(self.songs_listed)=}")
+
+        # random bs involving seeding different rngs
+        worker_info = torch.utils.data.get_worker_info()
+        seed = worker_info.seed if worker_info else random.randint(0, 2**32 - 1)
+        rng = random.Random(seed)
+        np.random.seed(seed % (2**32 - 1))
+        torch.manual_seed(seed)
+
+        # TODO handle short audio
+        song = self.songs[idx]
+
+        if song.shape[0] < self.chunk_size:
+            chunk = torch.nn.functional.pad(song, (0, self.chunk_size - song.shape[0]))
+
+        else:
+            start = rng.randint(0, song.shape[0] - self.chunk_size)
+            chunk = song[start : start + self.chunk_size]
+
+        # return chunk
+        return chunk
+
+
 class MTGJamendoStream(IterableDataset):
     def __init__(
         self,
@@ -997,6 +1066,84 @@ class EncodingsDataset(Dataset):
         start = torch.randint(0, T - self.chunk_size, (1,))
         end = start + self.chunk_size
         return data[:, start:end, :]
+
+
+class MTGJamendoLazy(Dataset):
+    """Dataset that lazily loads and caches audio files.
+
+    On first access, the full audio file is loaded, resampled to self.sample_rate,
+    cached in memory, and then random chunking is applied.
+    """
+
+    def __init__(
+        self,
+        data_dir="/scratch/users/nshaheed/mtg-jamendo",
+        chunk_size=2**18,
+        sample_rate=44100,
+        load_frac=1.0,
+        load_count=None,  # can ony do on or the other
+        augment=False,
+        debug=False,
+    ):
+        self.songs_listed = sorted(glob(f"{data_dir}/*/*.wav"))
+        self.chunk_size = chunk_size
+        self.debug = debug
+        self.augment = augment
+        self.sample_rate = sample_rate
+
+        # Fractional subset of files
+        if load_count is not None:
+            keep_n = max(load_count, 1)
+        if load_frac < 1.0:
+            keep_n = int(len(self.songs_listed) * load_frac)
+            keep_n = max(keep_n, 1)
+
+        self.songs_listed = random.sample(self.songs_listed, keep_n)
+
+        self.audio_cache = {}  # cache for loaded + resampled audio arrays
+
+    def __len__(self):
+        return len(self.songs_listed)
+
+    def __getitem__(self, idx):
+        if self.debug:
+            print(f"{len(self.songs_listed)=}")
+
+        # worker-seeded randomness
+        worker_info = torch.utils.data.get_worker_info()
+        seed = worker_info.seed if worker_info else random.randint(0, 2**32 - 1)
+        rng = random.Random(seed)
+        np.random.seed(seed % (2**32 - 1))
+        torch.manual_seed(seed)
+
+        # breakpoint()
+        song_path = self.songs_listed[idx]
+
+        # Lazily load + resample if not already cached
+        if song_path not in self.audio_cache:
+            print(f"caching idx {idx}, {song_path}...")
+            wv, orig_sr = sf.read(song_path, dtype="float32", always_2d=True)
+            wv = torch.from_numpy(wv)
+
+            wv = wv[:, 0]  # make mono
+
+            if orig_sr != self.sample_rate:
+                wv = torchaudio.functional.resample(wv, orig_sr, self.sample_rate)
+
+            self.audio_cache[song_path] = wv
+
+        wv = self.audio_cache[song_path]
+        length = wv.shape[0]
+
+        # Pick a random starting point
+        if length <= self.chunk_size:
+            start = 0
+        else:
+            start = torch.randint(length - self.chunk_size, size=(1,)).item()
+
+        chunk = wv[start : start + self.chunk_size]
+
+        return chunk
 
 
 # --- utility routine:

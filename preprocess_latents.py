@@ -16,7 +16,12 @@ from glob import glob
 from music2latent import EncoderDecoder
 import time
 
-from oplas.data import MTGJamendoStream, MTGJamendoStreamSingle
+from oplas.data import (
+    MTGJamendoStream,
+    MTGJamendoStreamSingle,
+    MTGJamendoLazy,
+    MTGJamendoCache,
+)
 
 
 def memory_usage():
@@ -87,22 +92,24 @@ data_dir = "/scratch/users/nshaheed/mtg-jamendo-wav/"
 save_file = "/scratch/users/nshaheed/mtg-jamendo-latents/latents.npz"
 
 # dataset = SongDataset(data_dir)
-dataset = MTGJamendoStreamSingle(data_dir=data_dir, load_frac=0.1)
+# dataset = MTGJamendoLazy(data_dir=data_dir, load_count=10)
+dataset = MTGJamendoCache(num_chunks=10)
 
-dataloader = DataLoader(dataset, 
-                        batch_size=64, num_workers=2, pin_memory=True,
-                        drop_last=True, shuffle=True, persistent_workers=True, 
-                        prefetch_factor=16,
+dataloader = DataLoader(
+    dataset, batch_size=16, num_workers=0, pin_memory=True, drop_last=True, shuffle=True
 )
 
-progress = tqdm(dataloader, smoothing=0)
 
 latents = {}
 audios = []
 
 total_time = time.time()
 
-for song in progress:
+pbar = tqdm(total=1000000)
+while True:
+    # progress = tqdm(dataloader, smoothing=0)
+    for song in dataloader:
+        pbar.update(1)
     # song = song.squeeze()
     # path = path[0]
 
@@ -124,6 +131,6 @@ for song in progress:
     # print(f'total time: {time.time() - total_time:.2f}s')
     # total_time = time.time()
 
-    progress.set_postfix(mem=f"{memory_usage():.2f}GB")
+    # progress.set_postfix(mem=f"{memory_usage():.2f}GB")
 
 # np.savez(save_file, **latents)
