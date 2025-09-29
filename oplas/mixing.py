@@ -87,7 +87,6 @@ def mix_stems_single(stems_in, static_mix=True, debug=False):
     device = stems_in.device
 
     # TODO randomly mute some of the tracks
-    # breakpoint()
     B, S, T = stems_in.shape  # batch, stems, time, channels
 
     # Choose uniform number of unmuted per batch
@@ -149,7 +148,6 @@ def mix_single(stems, encoder, static_mix=True, debug=False):
 
     ys = []
 
-    # breakpoint()
     # this isn't working
     for i in range(m["g_stems"].shape[0]):
         with torch.no_grad():

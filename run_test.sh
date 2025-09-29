@@ -4,11 +4,8 @@ ml load gcc/14.2.0
 ml load cudnn
 ml load libsndfile
 ml load ffmpeg
-# ml load python/3.12.1
-# ml load py-pytorch/2.4.1_py312
-# ml load py-scipystack
-# ml load py-wandb
+ml load opencv/4.10.0 libjpeg-turbo
 
 nvidia-smi
 
-uv run train_sweep.py --data_dir $SCRATCH/musdb18 --test
+uv run train_sweep.py --data_dir $SCRATCH/musdb18 --batch_size 256 --num_stems 16

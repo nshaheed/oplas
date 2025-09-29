@@ -3,7 +3,7 @@ name = "oplas"
 version = "0.0.1"
 description = "Operational Latent Spaces (OpLaS)"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = "==3.12.*"
 license = { text = "MIT" }
 
 authors = [
@@ -32,6 +32,9 @@ dependencies = [
   "torch-audiomentations>=0.12.0",
   "latent-effects",
   "psutil>=7.0.0",
+  "ffcv>=1.0.2",
+  "numpy>=1.24.4",
+  "opencv-python-headless>=4.11.0.86",
 ]
 
 [build-system]

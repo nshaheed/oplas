@@ -6,7 +6,7 @@ metric:
   goal: minimize
 early_terminate:
   type: hyperband
-  min_iter: 400
+  min_iter: 100
   eta: 2
 parameters:
   learning_rate:
@@ -16,7 +16,7 @@ parameters:
   adams_beta1:
     distribution: log_uniform_values
     min: 0.8
-    max: 0.9
+    max: 0.95
   adams_epsilon:
     distribution: log_uniform_values
     min: 5.0e-9
@@ -26,11 +26,13 @@ parameters:
     min: 500
     max: 4000
   num_inner_layers:
-    value: 1
+    values: [1, 2]
   hidden_dims_scale:
-    value: 8
+    values: [2, 4, 8, 16]
   var_coeff:
-    value: 0.8525204745756596
+    distribution: log_uniform_values
+    min: 0.5
+    max: 1.0
   inv_coeff:
     value: 1.0
   cov_coeff:
@@ -38,26 +40,28 @@ parameters:
   loss:
     value: "pseudo-huber"
   projector_dims:
-    values: [2, 4, 8, 16, 32, 64, 128]
+    value: 256
   scheduler:
     value: "none"
   augment:
-    value: True
+    value: False
   arch:
-    value: "vae"
+    value: "none"
 
 # --- Static parameters can be defined here too ---
 # --- These will be included in wandb.config for every run ---
   max_steps:
-    value: 5001
+    value: 10001
   load_frac:
     value: 1.0 # Use 0.01 for quick test runs
   checkpoint_every:
     value: 400
+  num_stems: 
+    value: 16
   val_every:
     value: 100
   batch_size:
-    value: 32
+    value: 1024
   data_dir:
     value: "/scratch/users/nshaheed/musdb18"
 

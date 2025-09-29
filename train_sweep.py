@@ -14,6 +14,10 @@ from torch.utils.data import DataLoader, ChainDataset
 from tqdm import tqdm
 import torch.multiprocessing as mp
 
+from ffcv.loader import Loader, OrderOption
+from ffcv.fields.decoders import NDArrayDecoder, FloatDecoder
+from ffcv.transforms import ToTensor, ToDevice
+
 import wandb
 
 # Assuming your custom modules are in the python path
@@ -101,30 +105,30 @@ def validate(projector, device, val_dl, encoder, config, step=None):
     losses = []
     z_sum = None
 
-    tbatch = tqdm(
-        val_dl,
-        unit="batch",
-        desc="validating",
-        smoothing=0,
-    )
-    for batch in tbatch:
+    tbatch = tqdm(val_dl, desc="valid", smoothing=0, leave=False)
+    for (batch,) in tbatch:
         # resize batch so that it has shape [batch, num_stems, latent, time]
         b, t = batch.shape
         s = config.num_stems
         batch = batch.view(b // s, s, t)
 
         # randomly scale and mix and return latents
+        encode_start = time.time()
         mixes = mix_single(batch, encoder, static_mix=False, debug=False)
+        encode_end = time.time() - encode_start
 
         # Call the new centralized loss function
+        loss_start = time.time()
         loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
+        loss_end = time.time() - loss_start
+
+        tbatch.set_postfix(encode=encode_end, loss=loss_end)
 
         losses.append(loss_dict)
 
     # take average of losses
     loss_avg = {}
 
-    # breakpoint()
     # sum losses
     for loss_dict in losses:
         for key, value in loss_dict.items():
@@ -133,7 +137,6 @@ def validate(projector, device, val_dl, encoder, config, step=None):
             else:
                 loss_avg[key] = value
 
-    # breakpoint()
     # calc mean
     for key, value in loss_avg.items():
         loss_avg[key] = value / len(losses)
@@ -273,31 +276,58 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     #     load_frac=0.01,
     #     chunk_size=2**16,
     # )
-    mtg_dataset = MTGJamendoCache(num_chunks=config.num_chunks)
-    train_dataset, val_dataset = torch.utils.data.random_split(mtg_dataset, [0.8, 0.2])
+    # mtg_dataset = MTGJamendoCache(num_chunks=config.num_chunks)
+    # train_dataset, val_dataset = torch.utils.data.random_split(mtg_dataset, [0.8, 0.2])
 
     # train_dataset = RandomMixDataset([stems_dataset, mtg_dataset])
     # val_dataset = StemChunkStream(
     #     data_dir=config.data_dir, subset="test", load_frac=config.load_frac
     # )
 
-    if test:
-        # for debugging on sh_dev
-        train_dl = DataLoader(  # do 12 workers?
-            mtg_dataset,
-            batch_size=config.batch_size,
-            num_workers=0,
-            pin_memory=True,
+    if True:
+        # # for debugging on sh_dev
+        # train_dl = DataLoader(  # do 12 workers?
+        #     mtg_dataset,
+        #     batch_size=config.batch_size,
+        #     num_workers=0,
+        #     pin_memory=True,
+        #     drop_last=True,
+        #     shuffle=True,
+        # )
+        # val_dl = DataLoader(
+        #     mtg_dataset,
+        #     batch_size=config.batch_size,
+        #     num_workers=0,
+        #     pin_memory=True,
+        #     drop_last=True,
+        #     shuffle=True,
+        # )
+
+        BATCH_SIZE = config.batch_size
+        NUM_WORKERS = 4
+        ORDERING = OrderOption.QUASI_RANDOM
+
+        PIPELINES = {
+            "audio": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
+        }
+
+        train_dl = Loader(
+            "/scratch/users/nshaheed/mtg-jamendo-ffcv-train.beton",
+            batch_size=BATCH_SIZE,
+            num_workers=NUM_WORKERS,
+            order=ORDERING,
+            pipelines=PIPELINES,
+            os_cache=False,  # can't cache bc it's too big to fit in memory
             drop_last=True,
-            shuffle=True,
         )
-        val_dl = DataLoader(
-            mtg_dataset,
-            batch_size=config.batch_size,
-            num_workers=0,
-            pin_memory=True,
+        val_dl = Loader(
+            "/scratch/users/nshaheed/mtg-jamendo-ffcv-val.beton",
+            batch_size=BATCH_SIZE,
+            num_workers=NUM_WORKERS,
+            order=ORDERING,
+            pipelines=PIPELINES,
+            os_cache=False,  # can't cache bc it's too big to fit in memory
             drop_last=True,
-            shuffle=True,
         )
     else:
         train_dl = DataLoader(  # do 12 workers?
@@ -334,25 +364,35 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     mixes = None
 
     step = start_step
-    tbatch = tqdm(
-        initial=step,
-        total=config.max_steps,
-        unit="batch",
-        desc="training",
-        smoothing=0,
-    )
-    while True:
-        if step >= config.max_steps and not ignore_max_steps:
-            break
+    # tbatch = tqdm(
+    #     initial=step,
+    #     total=config.max_steps,
+    #     unit="b",
+    #     desc="Trn",
+    #     smoothing=0,
+    # )
+    max_epochs = 10
+    epochs = tqdm(range(max_epochs), desc="epoch", smoothing=0)
+    for i in epochs:
+        # if step >= config.max_steps and not ignore_max_steps:
+        #     break
 
+        tbatch = tqdm(train_dl, desc="steps", smoothing=0, leave=False)
         dataload_start = time.time()
-        for batch in train_dl:
+
+        # training loop
+        for (batch,) in tbatch:
+            # for batch in range(0):
+            # if tbatch.n > 50:
+            #     break
+
             # print(f"Data loading time: {time.time() - dataload_time:.05f}s")
             dataload_end = time.time() - dataload_start
             # step = tbatch.n
             # step += 1
-            if step >= config.max_steps and not ignore_max_steps:
-                break
+            step = epochs.n * len(train_dl) + tbatch.n
+            # if step >= config.max_steps and not ignore_max_steps:
+            #     break
 
             batch = batch.to(device)
             # batch = torch.rand_like(batch)
@@ -364,8 +404,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             batch = batch.view(b // s, s, t)
 
             # augment with effects
-            # if config.augment:
-            #     batch = augment_effects(batch, sample_rate=44100)
+            if config.augment:
+                batch = augment_effects(batch, sample_rate=44100)
 
             encoding_start = time.time()
             with torch.no_grad():
@@ -377,6 +417,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             # print(f"Encoding time:     {time.time() - encoding_time:.05f}s")
             encoding_end = time.time() - encoding_start
 
+            # torch.cuda.synchronize(device)
+
             processing_start = time.time()
             loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
 
@@ -387,6 +429,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 scheduler.step()
 
             processing_end = time.time() - processing_start
+
+            # torch.cuda.synchronize(device)
 
             # print(f"Processing time:   {time.time() - processing_time:.05f}s")
 
@@ -412,12 +456,20 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                     "train/learning_rate": scheduler.get_last_lr()[0]
                 }
 
-            if step % config.val_every == 0:
+            logging_end = time.time() - logging_start
+            epochs.set_postfix(
+                d=dataload_end, e=encoding_end, p=processing_end, l=logging_end
+            )
+            tbatch.set_postfix(loss=loss.item(), sum=loss_dict["sum_loss"].item())
+            step += 1
+            tbatch.update(1)
+
+            if step % config.checkpoint_every == 0 and step != 0:
+                # checkpoint and generate some examples
                 latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
                 latent = latent.permute(0, 2, 1)  # have to swap it back
                 audio = encoder.decode(latent).cpu()
-                # breakpoint()
-                log_dict = log_dict | {
+                log_dict = {
                     "train/0/z_mix": wandb.Audio(
                         audio[0],
                         caption="decoding of audio mixed in the z domain",
@@ -450,19 +502,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                     ),
                 }
 
-                val_log = validate(
-                    projector, device, val_dl, encoder, config, step=step
-                )
-                log_dict.update(val_log)
-
-            run.log(log_dict)
-
-            logging_end = time.time() - logging_start
-            tbatch.set_postfix(
-                d=dataload_end, e=encoding_end, p=processing_end, l=logging_end
-            )
-
-            if step % config.checkpoint_every == 0 and step > 0 and False:
                 checkpoint_path = save_model(
                     projector, step, opt, scheduler, loss, run.id
                 )
@@ -471,10 +510,19 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 artifact.add_file(local_path=checkpoint_path, name="model.pt")
                 run.log_artifact(artifact)
 
-            step += 1
-            tbatch.update(1)
+            run.log(log_dict)
             dataload_start = time.time()
-        # validation at end of epoch
+
+        val_log = validate(projector, device, val_dl, encoder, config, step=step)
+        log_dict.update(val_log)
+
+        run.log(log_dict)
+
+        checkpoint_path = save_model(projector, step, opt, scheduler, loss, run.id)
+        # Log checkpoint as a versioned artifact
+        artifact = wandb.Artifact(f"model-ckpt-{run.id}", type="model")
+        artifact.add_file(local_path=checkpoint_path, name="model.pt")
+        run.log_artifact(artifact)
 
 
 def main():
@@ -596,7 +644,7 @@ def main():
             "scheduler": args.scheduler,
             "augment": args.augment,
             "arch": args.arch,
-            "kld_warmup": args.kld_warmup,
+            "kld_warmup": args.kld_warmupo,
             "num_stems": args.num_stems,
             "num_chunks": args.num_chunks,
         }
