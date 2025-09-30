@@ -655,18 +655,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # parser = argparse.ArgumentParser(
-    #     description="Run a W&B sweep agent for the oplas model."
-    # )
-    # parser.add_argument(
-    #     "sweep_id",
-    #     type=str,
-    #     help="wandb sweep id",
-    # )
-    # args = parser.parse_args()
-
-    # wandb.agent(args.sweep_id, function=train, count=1)
-    # train(args)
     mp.set_start_method("spawn", force=True)
 
     main()
