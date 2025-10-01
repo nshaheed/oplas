@@ -34,6 +34,50 @@ from oplas.models import Music2Latent, Projector, ProjectorVAE, VAE
 from oplas.helper import save_model, get_scheduler
 
 
+def log_gradients(model, step):
+    total_norm = 0.0
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad = param.grad.detach()
+            
+            # per-layer stats
+            wandb.log({
+                f"grad_norm/{name}": grad.norm().item(),
+                f"grad_mean/{name}": grad.mean().item(),
+                f"grad_max/{name}": grad.abs().max().item(),
+            }, step=step)
+
+            # accumulate for global norm
+            total_norm += grad.norm().item() ** 2
+
+    # log global gradient norm (L2 across all params)
+    total_norm = total_norm ** 0.5
+    wandb.log({"grad_norm/global": total_norm}, step=step)
+
+
+def log_adaptive_lr(model, optimizer, step):
+    for i, group in enumerate(optimizer.param_groups):
+        base_lr = group["lr"]  # the scheduled/base learning rate
+
+        for name, p in model.named_parameters():
+            if p in optimizer.state:
+                state = optimizer.state[p]
+                if "exp_avg_sq" in state:  # only exists after a few steps
+                    v_hat = state["exp_avg_sq"].sqrt().add_(group["eps"])
+
+                    eff_lr_tensor = base_lr / v_hat
+                    eff_lr_mean = eff_lr_tensor.mean().item()
+                    eff_lr_max = eff_lr_tensor.max().item()
+                    eff_lr_min = eff_lr_tensor.min().item()
+
+                    wandb.log({
+                        f"eff_lr_mean/{name}": eff_lr_mean,
+                        f"eff_lr_max/{name}": eff_lr_max,
+                        f"eff_lr_min/{name}": eff_lr_min,
+                    }, step=step)
+
+
+
 def calculate_losses(projector, mixes, config, step=0):
     """
     Pass data through projector and calculate losses
@@ -229,11 +273,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
-    opt = torch.optim.Adam(
+    opt = torch.optim.AdamW(
         projector.parameters(),
         lr=config.learning_rate,
         betas=(config.adams_beta1, 0.999),
         eps=config.adams_epsilon,
+        amsgrad=True,
     )
 
     scheduler = get_scheduler(opt, config)
@@ -424,9 +469,25 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
             loss = loss_dict["total_loss"]
             loss.backward()
+
+
+            # log gradients every 100 steps
+            if step % 100 == 0:
+                log_gradients(projector, step)
+
+
+            # clip the gradients to prevent exploding
+            # nn.utils.clip_grad_value_(projector.parameters(), clip_value=1.0)
+            nn.utils.clip_grad_norm_(projector.parameters(), max_norm=2.0, norm_type=2)
+
+
             opt.step()
             if scheduler:
                 scheduler.step()
+
+            if step % 100 == 0:
+                log_adaptive_lr(projector, opt, step)
+
 
             processing_end = time.time() - processing_start
 
@@ -447,6 +508,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 "train/sum_loss": loss_dict["sum_loss"].detach(),
                 "train/recon_loss": loss_dict["recon_loss"].item(),
             }
+
+            # update learning rate:
+            log_dict = log_dict | {"lr": opt.param_groups[0]['lr']}
+            opt.param_groups[0]['lr'] += 1e-7
 
             if config.arch == "vae":
                 log_dict = log_dict | {"train/kld_loss": loss_dict["kld_loss"].item()}
@@ -512,17 +577,18 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
             run.log(log_dict)
             dataload_start = time.time()
+            
+        if not test:
+            val_log = validate(projector, device, val_dl, encoder, config, step=step)
+            log_dict.update(val_log)
 
-        val_log = validate(projector, device, val_dl, encoder, config, step=step)
-        log_dict.update(val_log)
+            run.log(log_dict)
 
-        run.log(log_dict)
-
-        checkpoint_path = save_model(projector, step, opt, scheduler, loss, run.id)
-        # Log checkpoint as a versioned artifact
-        artifact = wandb.Artifact(f"model-ckpt-{run.id}", type="model")
-        artifact.add_file(local_path=checkpoint_path, name="model.pt")
-        run.log_artifact(artifact)
+            checkpoint_path = save_model(projector, step, opt, scheduler, loss, run.id)
+            # Log checkpoint as a versioned artifact
+            artifact = wandb.Artifact(f"model-ckpt-{run.id}", type="model")
+            artifact.add_file(local_path=checkpoint_path, name="model.pt")
+            run.log_artifact(artifact)
 
 
 def main():
@@ -644,7 +710,7 @@ def main():
             "scheduler": args.scheduler,
             "augment": args.augment,
             "arch": args.arch,
-            "kld_warmup": args.kld_warmupo,
+            "kld_warmup": args.kld_warmup,
             "num_stems": args.num_stems,
             "num_chunks": args.num_chunks,
         }

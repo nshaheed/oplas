@@ -36,7 +36,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
 
-    out_dims = config.projector_dims
+    out_dims = config['projector_dims']
 
     # --- Model, Optimizer, Scheduler ---
     projector = None
@@ -44,21 +44,21 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     projector = Projector(
         in_dims=64 * 2,  # two subsequent latent dims
         out_dims=out_dims,  # what is this gonna beeee
-        num_inner_layers=config.num_inner_layers,
-        hidden_dims_scale=config.hidden_dims_scale,
+        num_inner_layers=config['num_inner_layers'],
+        hidden_dims_scale=config['hidden_dims_scale'],
     ).to(device)
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
     opt = torch.optim.Adam(
         projector.parameters(),
-        lr=config.learning_rate,
-        betas=(config.adams_beta1, 0.999),
-        eps=config.adams_epsilon,
+        lr=config['learning_rate'],
+        betas=(config['adams_beta1'], 0.999),
+        eps=config['adams_epsilon'],
     )
 
-    BATCH_SIZE = config.batch_size
-    NUM_WORKERS = 4
+    BATCH_SIZE = config['batch_size']
+    NUM_WORKERS = 1
     ORDERING = OrderOption.QUASI_RANDOM
 
     PIPELINES = {
@@ -66,7 +66,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     }
 
     train_dl = Loader(
-        "./data/mtg-jamendo-ffcv-small.beton",
+        "/scratch/users/nshaheed/mtg-jamendo-ffcv-small.beton",
         batch_size=BATCH_SIZE,
         num_workers=NUM_WORKERS,
         order=ORDERING,
@@ -87,7 +87,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     # --- Training Loop ---
     projector.train()
 
-    step = start_step
+    step = 0
 
     max_epochs = 10
     epochs = tqdm(range(max_epochs), desc="epoch", smoothing=0)
@@ -101,10 +101,87 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
             # get two adjacent values in a batch ( i don't think this is really necessary?
             b, t = batch.shape
+
+            # (Pdb) audio.shape
+            # torch.Size([32, 259584])
+            # (Pdb) batch.shape
+            # torch.Size([32, 262144])
             breakpoint()
 
 
 def main():
+
+    parser = argparse.ArgumentParser(description="Training script with wandb")
+
+    # Three modes: sweep, single, resume
+    parser.add_argument(
+        "--sweep_id",
+        type=str,
+        default=None,
+        help="W&B sweep ID to run as an agent (sweep mode).",
+    )
+    parser.add_argument(
+        "--resume_run_id",
+        type=str,
+        default=None,
+        help="W&B run ID to resume training (resume mode).",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to model checkpoint when resuming.",
+    )
+
+    parser.add_argument("--learning_rate", type=float, default=3e-3)
+    parser.add_argument("--num_inner_layers", type=int, default=6)
+    parser.add_argument("--hidden_dims_scale", type=int, default=6)
+    parser.add_argument(
+        "--projector_dims", type=int, default=128, help="num of dims in projection space"
+    )
+
+    parser.add_argument("--var_coeff", type=float, default=1.0)
+    parser.add_argument("--inv_coeff", type=float, default=1.0)
+    parser.add_argument("--cov_coeff", type=float, default=1.0)
+
+    parser.add_argument("--adams_beta1", type=float, default=0.9)
+    parser.add_argument("--adams_epsilon", type=float, default=1e-8)
+
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_stems", type=int, default=8)
+    parser.add_argument("--num_chunks", type=int, default=10)
+    parser.add_argument(
+        "--data_dir", type=str, default="/scratch/users/nshaheed/musdb18"
+    )
+
+    parser.add_argument("--max_steps", type=int, default=10000)
+    parser.add_argument("--load_frac", type=float, default=1.0)
+    parser.add_argument("--checkpoint_every", type=int, default=400)
+    parser.add_argument("--val_every", type=int, default=200)
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="mse",
+        help="which loss function to use [mse,pseudo-huber]",
+    )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        help="which loss scheudler to use [None,cosine]",
+    )
+    parser.add_argument(
+        "--ignore_max_steps",
+        action=argparse.BooleanOptionalAction,
+        help="ignore max step and train forever",
+    )
+    parser.add_argument("--arch", type=str, help="use 'vae' or autoencoder(default)")
+    parser.add_argument("--kld_warmup", type=int, help="warmup of kld in vae")
+    parser.add_argument("--augment", action="store_true")
+    parser.set_defaults(augment=False)
+    parser.add_argument("--test", action="store_true")
+    parser.set_defaults(augment=False)
+    args = parser.parse_args()
+
     config = {
         "learning_rate": args.learning_rate,
         "adams_beta1": args.adams_beta1,
@@ -125,9 +202,12 @@ def main():
         "scheduler": args.scheduler,
         "augment": args.augment,
         "arch": args.arch,
-        "kld_warmup": args.kld_warmupo,
+        "kld_warmup": args.kld_warmup,
         "num_stems": args.num_stems,
         "num_chunks": args.num_chunks,
     }
-
+    
     train(None, config)
+
+if __name__ == "__main__":
+    main()
