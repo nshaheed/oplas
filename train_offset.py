@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 import torch
+import torchaudio
 from torch import nn
 from torch.utils.data import DataLoader, ChainDataset
 from tqdm import tqdm
@@ -95,8 +96,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     # The actual training loop
     for i in epochs:
         tbatch = tqdm(train_dl, desc="steps", smoothing=0, leave=False)
-
+        done = False
         for (batch,) in tbatch:
+            if done:
+                return
+            done = True
+
             opt.zero_grad()
 
             # get two adjacent values in a batch ( i don't think this is really necessary?
@@ -106,7 +111,38 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             # torch.Size([32, 259584])
             # (Pdb) batch.shape
             # torch.Size([32, 262144])
+
+            # latents = encoder.encode(batch)
+
+            audio = batch[0]
+            # encode the full audio
+            latents = encoder.encode(audio)
+
+            # decode as single latent
+            full_audio_reconstructed = encoder.decode(latents)
+
+            individual_latents_reconstructed = []
+            # break into individual latents and save as separate files
+            div = 1
+            for i in range(latents.shape[-1]//div):
+                print(f'{div*i=}, {div*i+div=}')
+                # latent_audio = encoder.decode(latents[:,:,8*i:8*i+8])
+                latent_audio = encoder.decode(latents[:,:,div*i:div*i+div])
+                individual_latents_reconstructed.append(latent_audio)
+
             breakpoint()
+
+            torchaudio.save('./test_audio/full_audio.wav', full_audio_reconstructed, 44100)
+
+            for i, aud in enumerate(individual_latents_reconstructed):
+                torchaudio.save(f'./test_audio/latent_audio_{i:03}.wav', aud, 44100)
+            
+            # breakpoint()
+            # for i in range(1,100):
+            #     latents = torch.rand(32,64,i)
+            #     audio = encoder.decode(latents)
+            #     print(f'Latents {i}: {audio.shape}, sample/latent: {audio.shape[1]/i}')
+            # breakpoint()
 
 
 def main():

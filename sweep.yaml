@@ -59,7 +59,7 @@ parameters:
   num_stems: 
     value: 16
   val_every:
-    value: 100
+    value: 500
   batch_size:
     value: 1024
   data_dir:
