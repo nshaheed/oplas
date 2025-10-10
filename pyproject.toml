@@ -36,6 +36,7 @@ dependencies = [
   "numpy>=1.24.4",
   "opencv-python-headless>=4.11.0.86",
   "umap-learn>=0.5.9.post2",
+  "torch-lr-finder>=0.2.2",
 ]
 
 [build-system]

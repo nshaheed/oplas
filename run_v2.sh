@@ -19,4 +19,4 @@ ml load ffmpeg
 ml load opencv/4.10.0 libjpeg-turbo
 
 uv run train_sweep.py --data_dir $SCRATCH/musdb18 \
-    --sweep_id nshaheed-stanford-university/oplas/o2pkcihg
+    --sweep_id nshaheed-stanford-university/oplas/lqp3rp4p

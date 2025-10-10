@@ -154,5 +154,7 @@ def mix_single(stems, encoder, static_mix=True, debug=False):
             y = encoder.forward(m["g_stems"][i])
         ys.append(y)
 
+    ys = torch.stack(ys, dim=0)
+
     y_mix = encoder.forward(m["g_mix"])
     return m | {"ys": ys, "y_mix": y_mix}

@@ -25,12 +25,23 @@ def save_model(
     return save_path
 
 
-def get_scheduler(opt, config):
+def get_scheduler(opt, config, dl):
     scheduler = None
 
     if config.scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             opt, T_max=config.max_steps
         )
-
+    if config.scheduler == "cyclic":
+        scheduler = torch.optim.lr_scheduler.CyclicLR(
+            opt, base_lr=config.base_lr, max_lr=config.max_lr
+        )
+    if config.scheduler == "cyclic2":
+        scheduler = torch.optim.lr_scheduler.CyclicLR(
+            opt, base_lr=config.base_lr, max_lr=config.max_lr, mode="triangular2"
+        )
+    if config.scheduler == "1cycle":
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            opt, max_lr=config.max_lr, epochs=config.max_epochs, steps_per_epoch=len(dl),
+        )
     return scheduler

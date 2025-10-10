@@ -11,24 +11,24 @@ early_terminate:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: 5.0e-6
+    min: 1.0e-4
     max: 8.0e-2
   adams_beta1:
     distribution: log_uniform_values
-    min: 0.8
+    min: 0.85
     max: 0.95
   adams_epsilon:
     distribution: log_uniform_values
     min: 5.0e-9
-    max: 1.0e-7
+    max: 8.0e-8
   kld_warmup:
     distribution: log_uniform_values
     min: 500
     max: 4000
   num_inner_layers:
-    values: [1, 2]
+    value: 1
   hidden_dims_scale:
-    values: [2, 4, 8, 16]
+    values: [4, 8, 16]
   var_coeff:
     distribution: log_uniform_values
     min: 0.5
@@ -59,7 +59,7 @@ parameters:
   num_stems: 
     value: 16
   val_every:
-    value: 100
+    value: 500
   batch_size:
     value: 1024
   data_dir:

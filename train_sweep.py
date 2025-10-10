@@ -34,19 +34,62 @@ from oplas.models import Music2Latent, Projector, ProjectorVAE, VAE
 from oplas.helper import save_model, get_scheduler
 
 
-def calculate_losses(projector, mixes, config, step=0):
+def log_gradients(model, run):
+    total_norm = 0.0
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad = param.grad.detach()
+            
+            # per-layer stats
+            run.log({
+                f"grad_norm/{name}": grad.norm().item(),
+                f"grad_mean/{name}": grad.mean().item(),
+                f"grad_max/{name}": grad.abs().max().item(),
+            }, commit=False)
+
+            # accumulate for global norm
+            total_norm += grad.norm().item() ** 2
+
+    # log global gradient norm (L2 across all params)
+    total_norm = total_norm ** 0.5
+    run.log({"grad_norm/global": total_norm}, commit=False)
+
+
+def log_adaptive_lr(model, optimizer, run):
+    for i, group in enumerate(optimizer.param_groups):
+        base_lr = group["lr"]  # the scheduled/base learning rate
+
+        for name, p in model.named_parameters():
+            if p in optimizer.state:
+                state = optimizer.state[p]
+                if "exp_avg_sq" in state:  # only exists after a few steps
+                    v_hat = state["exp_avg_sq"].sqrt().add_(group["eps"])
+
+                    eff_lr_tensor = base_lr / v_hat
+                    eff_lr_mean = eff_lr_tensor.mean().item()
+                    eff_lr_max = eff_lr_tensor.max().item()
+                    eff_lr_min = eff_lr_tensor.min().item()
+
+                    run.log({
+                        f"eff_lr_mean/{name}": eff_lr_mean,
+                        f"eff_lr_max/{name}": eff_lr_max,
+                        f"eff_lr_min/{name}": eff_lr_min,
+                    }, commit=False)
+
+
+
+def calculate_losses(projector, ys, y_mix, config, step=0):
     """
     Pass data through projector and calculate losses
     """
 
     # full audio mix
-    y_mix = mixes["y_mix"].to(torch.float32)
     z_mix, y_hat_mix, *params_mix = projector(y_mix.permute(0, 2, 1))
     z_mix = z_mix.permute(0, 2, 1)
     y_hat_mix = y_hat_mix.permute(0, 2, 1)
 
     # stems
-    ys_tensor = torch.stack(mixes["ys"], dim=0).to(torch.float32)
+    ys_tensor = ys
     ys_permuted = ys_tensor.permute(0, 1, 3, 2)
     z_stems, y_hats, *params_stems = projector(ys_permuted)
 
@@ -90,41 +133,75 @@ def calculate_losses(projector, mixes, config, step=0):
         "recon_loss": y_mix_loss + y_loss + inv_loss + sum_loss,
     }, z_sum
 
+def detach_losses(loss):
+    """ detach losses from graph and then move to cpu (for validation) """
+    new_loss = {}
+
+    for key, value in loss.items():
+        if isinstance(value, torch.Tensor):
+            new_loss[key] = value.detach().cpu()
+        else:
+            new_loss[key] = value
+
+    return new_loss
+
+def make_examples(ys, y_sum, model, section="train", num_examples=3):
+    stems_latent = ys[:num_examples]
+
+    mix_latent = y_sum.permute(0,2,1)[:num_examples]
+
+    examples = {}
+
+    for i in range(num_examples):
+        mix = model.decode(mix_latent[i])
+    
+        stems_mixdown = None
+        for j in range(stems_latent.shape[1]):
+            result = model.decode(stems_latent[i,j,:,:])
+            
+            if stems_mixdown is None:
+                stems_mixdown = result
+            else:
+                stems_mixdown += result
+
+        
+
+            # stems = model.decode(stems_latent)
+
+        examples[f"{section}/{i}/z_mix"] = wandb.Audio(
+            mix[0],
+            caption="decoding of audio mixed in the z domain",
+            sample_rate=44100,
+        )
+        examples[f"{section}/{i}/z_target"] = wandb.Audio(
+            stems_mixdown[0],
+            caption="stems decoded separately and mixed together",
+            sample_rate=44100,
+        )
+
+    return examples
+
+
 
 @torch.no_grad()
 def validate(projector, device, val_dl, encoder, config, step=None):
     """Validation function, slightly simplified for clarity."""
     projector.eval()  # Set model to evaluation mode
-    # vbatch_iter = iter(val_dl)
-    # try:
-    #     batch = next(vbatch_iter).to(device)
-    # except StopIteration:
-    #     print("Validation dataloader is empty.")
-    #     return {}
 
     losses = []
     z_sum = None
+    stems = None
 
     tbatch = tqdm(val_dl, desc="valid", smoothing=0, leave=False)
-    for (batch,) in tbatch:
-        # resize batch so that it has shape [batch, num_stems, latent, time]
-        b, t = batch.shape
-        s = config.num_stems
-        batch = batch.view(b // s, s, t)
-
-        # randomly scale and mix and return latents
-        encode_start = time.time()
-        mixes = mix_single(batch, encoder, static_mix=False, debug=False)
-        encode_end = time.time() - encode_start
-
+    for stems, mix in tbatch:
         # Call the new centralized loss function
         loss_start = time.time()
-        loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
+        loss_dict, z_sum = calculate_losses(projector, stems, mix, config, step)
         loss_end = time.time() - loss_start
 
-        tbatch.set_postfix(encode=encode_end, loss=loss_end)
+        tbatch.set_postfix(loss=loss_end)
 
-        losses.append(loss_dict)
+        losses.append(detach_losses(loss_dict))
 
     # take average of losses
     loss_avg = {}
@@ -158,42 +235,9 @@ def validate(projector, device, val_dl, encoder, config, step=None):
 
     # actually generate some audio examples
     latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
-    latent = latent.permute(0, 2, 1)  # have to swap it back
 
-    audio = encoder.decode(latent).cpu()
-
-    log = log | {
-        "val/0/z_mix": wandb.Audio(
-            audio[0],
-            caption="decoding of audio mixed in the z domain",
-            sample_rate=44100,
-        ),
-        "val/0/orig": wandb.Audio(
-            mixes["g_mix"][0].cpu(),
-            caption="original mix",
-            sample_rate=44100,
-        ),
-        "val/1/z_mix": wandb.Audio(
-            audio[1],
-            caption="decoding of audio mixed in the z domain",
-            sample_rate=44100,
-        ),
-        "val/1/orig": wandb.Audio(
-            mixes["g_mix"][1].cpu(),
-            caption="original mix",
-            sample_rate=44100,
-        ),
-        "val/2/z_mix": wandb.Audio(
-            audio[2],
-            caption="decoding of audio mixed in the z domain",
-            sample_rate=44100,
-        ),
-        "val/2/orig": wandb.Audio(
-            mixes["g_mix"][2].cpu(),
-            caption="original mix",
-            sample_rate=44100,
-        ),
-    }
+    examples = make_examples(stems, latent, encoder, section="val")
+    log = log | examples
 
     projector.train()  # Set model back to training mode
     return log
@@ -229,14 +273,13 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
-    opt = torch.optim.Adam(
+    opt = torch.optim.AdamW(
         projector.parameters(),
         lr=config.learning_rate,
         betas=(config.adams_beta1, 0.999),
         eps=config.adams_epsilon,
+        amsgrad=True,
     )
-
-    scheduler = get_scheduler(opt, config)
 
     loss_fn = get_loss_fn(config.loss)
 
@@ -307,12 +350,16 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         NUM_WORKERS = 4
         ORDERING = OrderOption.QUASI_RANDOM
 
+        # PIPELINES = {
+        #     "audio": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
+        # }
         PIPELINES = {
-            "audio": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
+            "stems": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
+            "mix": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
         }
 
         train_dl = Loader(
-            "/scratch/users/nshaheed/mtg-jamendo-ffcv-train.beton",
+            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-100.beton",
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             order=ORDERING,
@@ -321,7 +368,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             drop_last=True,
         )
         val_dl = Loader(
-            "/scratch/users/nshaheed/mtg-jamendo-ffcv-val.beton",
+            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-val-50.beton",
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             order=ORDERING,
@@ -347,6 +394,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             shuffle=True,
         )
 
+    scheduler = get_scheduler(opt, config, train_dl)
     # --- Training Loop ---
     projector.train()
 
@@ -371,17 +419,14 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     #     desc="Trn",
     #     smoothing=0,
     # )
-    max_epochs = 10
+    max_epochs = config.max_epochs
     epochs = tqdm(range(max_epochs), desc="epoch", smoothing=0)
     for i in epochs:
-        # if step >= config.max_steps and not ignore_max_steps:
-        #     break
-
         tbatch = tqdm(train_dl, desc="steps", smoothing=0, leave=False)
         dataload_start = time.time()
 
         # training loop
-        for (batch,) in tbatch:
+        for stems, mix in tbatch:
             # for batch in range(0):
             # if tbatch.n > 50:
             #     break
@@ -391,51 +436,55 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             # step = tbatch.n
             # step += 1
             step = epochs.n * len(train_dl) + tbatch.n
-            # if step >= config.max_steps and not ignore_max_steps:
-            #     break
 
-            batch = batch.to(device)
-            # batch = torch.rand_like(batch)
             opt.zero_grad()
 
-            # resize batch so that it has shape [batch, num_stems, latent, time]
-            b, t = batch.shape
-            s = config.num_stems
-            batch = batch.view(b // s, s, t)
+            # # resize batch so that it has shape [batch, num_stems, latent, time]
+            # b, t = batch.shape
+            # s = config.num_stems
+            # batch = batch.view(b // s, s, t)
 
-            # augment with effects
-            if config.augment:
-                batch = augment_effects(batch, sample_rate=44100)
+            # # augment with effects
+            # if config.augment:
+            #     batch = augment_effects(batch, sample_rate=44100)
 
-            encoding_start = time.time()
-            with torch.no_grad():
-                if test and mixes is None:
-                    mixes = mix_single(batch, encoder, static_mix=False, debug=False)
-                if not test:
-                    mixes = mix_single(batch, encoder, static_mix=False, debug=False)
+            # encoding_start = time.time()
+            # with torch.no_grad():
+            #     if test and mixes is None:
+            #         mixes = mix_single(batch, encoder, static_mix=False, debug=False)
+            #     if not test:
+            #         mixes = mix_single(batch, encoder, static_mix=False, debug=False)
 
             # print(f"Encoding time:     {time.time() - encoding_time:.05f}s")
-            encoding_end = time.time() - encoding_start
-
-            # torch.cuda.synchronize(device)
+            # encoding_end = time.time() - encoding_start
 
             processing_start = time.time()
-            loss_dict, z_sum = calculate_losses(projector, mixes, config, step)
-
+            loss_dict, z_sum = calculate_losses(projector, stems, mix, config, step)
             loss = loss_dict["total_loss"]
             loss.backward()
+
+            # log gradients every 100 steps
+            if step % 1000 == 0:
+                log_gradients(projector, run)
+
+
+            # clip the gradients to prevent exploding
+            nn.utils.clip_grad_norm_(projector.parameters(), max_norm=2.0, norm_type=2)
+
+
             opt.step()
             if scheduler:
                 scheduler.step()
 
-            processing_end = time.time() - processing_start
+            if step % 1000 == 0:
+                log_adaptive_lr(projector, opt, run)
 
-            # torch.cuda.synchronize(device)
+
+            processing_end = time.time() - processing_start
 
             # print(f"Processing time:   {time.time() - processing_time:.05f}s")
 
             # --- Logging ---
-            # tbatch.set_postfix(loss=loss.item(), sum_loss=loss_dict['sum_loss'].item())
             logging_start = time.time()
             log_dict = {
                 "train/loss": loss.item(),  # Log the loss that was backpropagated
@@ -448,6 +497,9 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 "train/recon_loss": loss_dict["recon_loss"].item(),
             }
 
+            # update learning rate:
+            log_dict = log_dict | {"lr": opt.param_groups[0]['lr']}
+
             if config.arch == "vae":
                 log_dict = log_dict | {"train/kld_loss": loss_dict["kld_loss"].item()}
 
@@ -458,7 +510,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
             logging_end = time.time() - logging_start
             epochs.set_postfix(
-                d=dataload_end, e=encoding_end, p=processing_end, l=logging_end
+                d=dataload_end, p=processing_end, l=logging_end
             )
             tbatch.set_postfix(loss=loss.item(), sum=loss_dict["sum_loss"].item())
             step += 1
@@ -467,40 +519,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             if step % config.checkpoint_every == 0 and step != 0:
                 # checkpoint and generate some examples
                 latent = projector.decode(z_sum.permute(0, 2, 1))  # swap last two dims
-                latent = latent.permute(0, 2, 1)  # have to swap it back
-                audio = encoder.decode(latent).cpu()
-                log_dict = {
-                    "train/0/z_mix": wandb.Audio(
-                        audio[0],
-                        caption="decoding of audio mixed in the z domain",
-                        sample_rate=44100,
-                    ),
-                    "train/0/orig": wandb.Audio(
-                        mixes["g_mix"][0].cpu(),
-                        caption="original mix",
-                        sample_rate=44100,
-                    ),
-                    "train/1/z_mix": wandb.Audio(
-                        audio[1],
-                        caption="decoding of audio mixed in the z domain",
-                        sample_rate=44100,
-                    ),
-                    "train/1/orig": wandb.Audio(
-                        mixes["g_mix"][1].cpu(),
-                        caption="original mix",
-                        sample_rate=44100,
-                    ),
-                    "train/2/z_mix": wandb.Audio(
-                        audio[2],
-                        caption="decoding of audio mixed in the z domain",
-                        sample_rate=44100,
-                    ),
-                    "train/2/orig": wandb.Audio(
-                        mixes["g_mix"][2].cpu(),
-                        caption="original mix",
-                        sample_rate=44100,
-                    ),
-                }
+                # latent = latent.permute(0, 2, 1)  # have to swap it back
+                examples = make_examples(stems, latent, encoder, section="train")
+
+                log_dict = log_dict | examples
 
                 checkpoint_path = save_model(
                     projector, step, opt, scheduler, loss, run.id
@@ -510,19 +532,20 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 artifact.add_file(local_path=checkpoint_path, name="model.pt")
                 run.log_artifact(artifact)
 
-            run.log(log_dict)
             dataload_start = time.time()
+            
+            if step % (config.val_every * 1) == 0 and not test:
+                val_log = validate(projector, device, val_dl, encoder, config, step=step)
+                log_dict.update(val_log)
+    
+                checkpoint_path = save_model(projector, step, opt, scheduler, loss, run.id)
+                # Log checkpoint as a versioned artifact
+                artifact = wandb.Artifact(f"model-ckpt-{run.id}", type="model")
+                artifact.add_file(local_path=checkpoint_path, name="model.pt")
+                run.log_artifact(artifact)
 
-        val_log = validate(projector, device, val_dl, encoder, config, step=step)
-        log_dict.update(val_log)
+            run.log(log_dict)
 
-        run.log(log_dict)
-
-        checkpoint_path = save_model(projector, step, opt, scheduler, loss, run.id)
-        # Log checkpoint as a versioned artifact
-        artifact = wandb.Artifact(f"model-ckpt-{run.id}", type="model")
-        artifact.add_file(local_path=checkpoint_path, name="model.pt")
-        run.log_artifact(artifact)
 
 
 def main():
@@ -549,6 +572,8 @@ def main():
     )
 
     parser.add_argument("--learning_rate", type=float, default=3e-3)
+    parser.add_argument("--base_lr", type=float, help="min lr (for CyclicLR)")
+    parser.add_argument("--max_lr", type=float, help="max lr (for CyclicLR)")
     parser.add_argument("--num_inner_layers", type=int, default=6)
     parser.add_argument("--hidden_dims_scale", type=int, default=6)
     parser.add_argument(
@@ -570,6 +595,7 @@ def main():
     )
 
     parser.add_argument("--max_steps", type=int, default=10000)
+    parser.add_argument("--max_epochs", type=int, default=10)
     parser.add_argument("--load_frac", type=float, default=1.0)
     parser.add_argument("--checkpoint_every", type=int, default=400)
     parser.add_argument("--val_every", type=int, default=200)
@@ -599,7 +625,6 @@ def main():
 
     # --- Mode 1: Sweep run ---
     if args.sweep_id:
-
         def sweep_train():
             with wandb.init() as run:
                 config = wandb.config  # get hyperparams from sweep
@@ -624,30 +649,8 @@ def main():
 
     # --- Mode 3: Single run ---
     else:
-        config = {
-            "learning_rate": args.learning_rate,
-            "adams_beta1": args.adams_beta1,
-            "adams_epsilon": args.adams_epsilon,
-            "num_inner_layers": args.num_inner_layers,
-            "hidden_dims_scale": args.hidden_dims_scale,
-            "projector_dims": args.projector_dims,
-            "var_coeff": args.var_coeff,
-            "inv_coeff": args.inv_coeff,
-            "cov_coeff": args.cov_coeff,
-            "batch_size": args.batch_size,
-            "data_dir": args.data_dir,
-            "max_steps": args.max_steps,
-            "load_frac": args.load_frac,
-            "checkpoint_every": args.checkpoint_every,
-            "val_every": args.val_every,
-            "loss": args.loss,
-            "scheduler": args.scheduler,
-            "augment": args.augment,
-            "arch": args.arch,
-            "kld_warmup": args.kld_warmupo,
-            "num_stems": args.num_stems,
-            "num_chunks": args.num_chunks,
-        }
+        config = vars(args)
+
         with wandb.init(config=config) as run:
             train(
                 run, run.config, ignore_max_steps=args.ignore_max_steps, test=args.test
