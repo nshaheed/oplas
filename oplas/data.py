@@ -188,11 +188,10 @@ class MTGJamendo(Dataset):
 
 
 class MTGJamendoStreamSingle(Dataset):
-    """Loads pre-encoded audio files from a .npz file.
+    """Loads chuck from single file from audio dataset
 
-    While the previous approach involved loading equal-sized chunks
-    from several audio files, this dataset will preload everything
-    in-memory and then only return the chunk from one audio file.
+    this dataset doesn't have a concept of stems and will let that be
+    handled at the dataloader level
 
     """
 
@@ -413,35 +412,6 @@ class MTGJamendoStream(IterableDataset):
             while len(stems) < max_stems:
                 song_idx = rng.randint(0, len(self.songs_listed) - 1)
                 song_path = self.songs_listed[song_idx]
-
-                # ----- without sf ----
-                # info = torchaudio.info(song_path)
-                # file_sr = info.sample_rate
-                # file_frames = info.num_frames
-                # file_dur = file_frames / file_sr
-
-                # if file_dur <= chunk_size_dur:
-                #     continue  # skip too-short songs
-
-                # # add an extra second to avoid getting errors with resampling
-                # # yes this is a hack
-                # chunk_size_file = int(chunk_size_dur * file_sr) + file_sr
-                # # Pick a random start position in seconds
-                # start_frame = rng.randint(0, file_frames - chunk_size_file)
-
-                # waveform, sr = torchaudio.load(
-                #     song_path,
-                #     frame_offset=start_frame,
-                #     num_frames=chunk_size_file,
-                #     channels_first=False,
-                #     backend='soundfile',
-                # )
-
-                # # waveform = waveform[0] # get first channel
-                # if sr != self.sample_rate:
-                #     resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
-                #     waveform = resampler(waveform)
-                # ----- without sf ----
 
                 ## try with sf
                 info = sf.info(song_path)

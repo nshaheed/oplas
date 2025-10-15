@@ -71,6 +71,7 @@ class AudioChunkDataset(Dataset):
         return (chunk.contiguous().numpy(),)
 
 
+
 if __name__ == "__main__":
     import argparse
 
@@ -93,17 +94,32 @@ if __name__ == "__main__":
         default=0.1,
         help="Portion of dataset to be split into the val chunk",
     )
+    parser.add_argument(
+        "--test_split",
+        type=float,
+        default=0.01,
+        help="Portion of dataset to be split into the test chunk",
+    )
     args = parser.parse_args()
 
     dataset = AudioChunkDataset(args.audio_dir)
 
-    train_split, val_split = 1 - args.val_split, args.val_split
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_split, val_split]
+    train_split = 1 - args.val_split - args.test_split
+    val_split, test_split = args.val_split, args.test_split
+    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
+        dataset, [train_split, val_split, test_split]
     )
 
+    writer_test = DatasetWriter(
+        f"{args.out_path}-test.beton",
+        {"audio": NDArrayField(shape=(CHUNK_SIZE,), dtype=np.dtype("float32"))},
+        num_workers=args.num_workers,
+    )
+
+    writer_test.from_indexed_dataset(test_dataset)
+
     writer_val = DatasetWriter(
-        f"{args.out_path}-val",
+        f"{args.out_path}-val.beton",
         {"audio": NDArrayField(shape=(CHUNK_SIZE,), dtype=np.dtype("float32"))},
         num_workers=args.num_workers,
     )
@@ -111,7 +127,7 @@ if __name__ == "__main__":
     writer_val.from_indexed_dataset(val_dataset)
 
     writer_train = DatasetWriter(
-        f"{args.out_path}-train",
+        f"{args.out_path}-train.beton",
         {"audio": NDArrayField(shape=(CHUNK_SIZE,), dtype=np.dtype("float32"))},
         num_workers=args.num_workers,
     )
