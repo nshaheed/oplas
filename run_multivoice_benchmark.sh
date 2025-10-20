@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+#SBATCH --array=2-32
 #SBATCH --job-name=multivoice
 #SBATCH --output=multivoice.%j.out
 #SBATCH --error=multivoice.%j.err
@@ -18,4 +19,4 @@ ml load ffmpeg
 ml load opencv/4.10.0 libjpeg-turbo
 
 
-uv run multivoice_benchmark.py -n 32 -k oauvlx7z 00245wks -v v142 v73
+uv run multivoice_benchmark.py -k oauvlx7z -v v142 -n ${SLURM_ARRAY_TASK_ID}

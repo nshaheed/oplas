@@ -2,13 +2,15 @@
 #SBATCH --job-name=cyclic8
 #SBATCH --output=cyclic8.%j.out
 #SBATCH --error=cyclic8.%j.err
-#SBATCH --time=16:00:00
+#SBATCH --time=32:00:00
 #SBATCH -p hns,gpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-gpu=8
 #SBATCH --gpus-per-task=1
 #SBATCH --mem-per-gpu=32G
-#SBATCH -C "GPU_MEM:32GB|GPU_MEM:48GB|GPU_MEM:80GB"
+#SBATCH -C "GPU_MEM:80GB"
+
+# ### #SBATCH -C "GPU_MEM:32GB|GPU_MEM:48GB|GPU_MEM:80GB"
 
 ml load system
 ml load uv
@@ -34,5 +36,5 @@ uv run train_sweep.py --data_dir $SCRATCH/musdb18 \
     --max_epochs 40 \
     --num_inner_layers 3 \
     --batch_size 512 \
-    --num_stems 16 \
+    --num_stems 64 \
     --projector_dims 256

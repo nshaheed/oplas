@@ -20,14 +20,29 @@ ml load opencv/4.10.0 libjpeg-turbo
 
 nvidia-smi
 
+declare -a arr=("14" "12" "10" "8" "6" "4" "2")
 
-uv run lr_range.py --data_dir $SCRATCH/musdb18 \
-    --adams_beta1 0.8816049012793831 \
-    --adams_epsilon 0.00000000785554863846 \
-    --cov_coeff 0.04 \
-    --var_coeff 0.71052825253836 \
-    --hidden_dims_scale 8 \
-    --num_inner_layers 3 \
-    --batch_size 512 \
-    --num_stems 16 \
-    --projector_dims 256
+for i in "${arr[@]}"
+do
+    uv run lr_range.py --data_dir $SCRATCH/musdb18 \
+	--adams_beta1 0.8816049012793831 \
+	--adams_epsilon 0.00000000785554863846 \
+	--cov_coeff 0.04 \
+	--var_coeff 0.71052825253836 \
+	--hidden_dims_scale 8 \
+	--num_inner_layers 3 \
+	--batch_size 8 \
+	--num_stems "$i" \
+	--projector_dims 256
+done
+
+# uv run lr_range.py --data_dir $SCRATCH/musdb18 \
+#     --adams_beta1 0.8816049012793831 \
+#     --adams_epsilon 0.00000000785554863846 \
+#     --cov_coeff 0.04 \
+#     --var_coeff 0.71052825253836 \
+#     --hidden_dims_scale 8 \
+#     --num_inner_layers 3 \
+#     --batch_size 512 \
+#     --num_stems 2 \
+#     --projector_dims 256

@@ -1,9 +1,9 @@
 #!/usr/bin/bash
-#SBATCH --array=1-100
+#SBATCH --array=101-150
 #SBATCH --job-name=prebake
 #SBATCH --output=prebake.%A_%a.out
 #SBATCH --error=prebake.%A_%a.err
-#SBATCH --time=8:00:00
+#SBATCH --time=16:00:00
 #SBATCH -p hns,gpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-gpu=4

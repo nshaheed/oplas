@@ -194,6 +194,9 @@ def validate(projector, device, val_dl, encoder, config, step=None):
 
     tbatch = tqdm(val_dl, desc="valid", smoothing=0, leave=False)
     for stems, mix in tbatch:
+        stems = stems[:,:config.num_stems,:,:]
+        print(f"{stems.shape=}")
+
         # Call the new centralized loss function
         loss_start = time.time()
         loss_dict, z_sum = calculate_losses(projector, stems, mix, config, step)
@@ -359,7 +362,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         }
 
         train_dl = Loader(
-            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-100.beton",
+            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-train.beton",
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             order=ORDERING,
@@ -368,7 +371,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             drop_last=True,
         )
         val_dl = Loader(
-            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-val-50.beton",
+            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-val.beton",
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             order=ORDERING,
@@ -430,6 +433,10 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             # for batch in range(0):
             # if tbatch.n > 50:
             #     break
+
+            breakpoint()
+            # train only on num_stems
+            stems = stems[:,:config.num_stems,:,:]
 
             # print(f"Data loading time: {time.time() - dataload_time:.05f}s")
             dataload_end = time.time() - dataload_start
