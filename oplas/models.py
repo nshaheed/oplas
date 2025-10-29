@@ -1,4 +1,5 @@
 import os
+import math
 
 # import laion_clap
 import numpy as np
@@ -51,6 +52,92 @@ class EmbedBlock(nn.Module):
         # if self.bn  is not None: x = self.bn(x)   # re. "BN before or after Activation? cf. https://github.com/ducha-aiki/caffenet-benchmark/blob/master/batchnorm.md"
         return xin + x if (self.resid and self.in_dims == self.out_dims) else x
 
+class SlidingWindow(nn.Module):
+    """Sliding window model. Re-projects two adjacent latent points so
+    that a window of the new latent space is proportional to the
+    window of the two audio chunks.
+    """
+    def __init__(
+        self,
+        in_dims=64,
+        latent_dims=128,
+        hidden_dims_scale=1,
+        num_inner_layers=8,
+        act=nn.GELU(),
+        use_bn=False,  # bn is bad for regression model
+        resid=True,
+        block=EmbedBlock,  # Linear layer with optional activation & optional BatchNorm
+        trivial=False,  # ignore everything and make this an identity mapping
+    ):
+        super().__init__()
+        self.resid, self.trivial = resid, trivial
+        self.in_dims, self.latent_dims = in_dims, latent_dims
+
+        # because the model expects two in_dims concatated with each other - the size
+        # is twice as big, i.e. two 64-dim latent vectors together form a 128-dim vec
+        hidden_dims = hidden_dims_scale * in_dims * 2
+
+        # if using resid, only apply to the innermost block when the dims fit
+        self.encoder = nn.Sequential(
+            block(in_dims*2, hidden_dims, act=act, use_bn=use_bn, resid=resid),
+            *[
+                block(hidden_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid)
+                for _ in range(num_inner_layers)
+            ],
+            block(
+                hidden_dims, latent_dims, act=None, use_bn=use_bn, resid=resid, bias=False
+            ),  # bias=False from VICReg paper
+        )
+        self.decoder = nn.Sequential(  # same as encoder, in fact.
+            block(latent_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid),
+            *[
+                block(hidden_dims, hidden_dims, act=act, use_bn=use_bn, resid=resid)
+                for _ in range(num_inner_layers)
+            ],
+            block(hidden_dims, in_dims*2, act=None, use_bn=use_bn, resid=resid),
+        )
+
+    def encode(self, y):
+        if self.trivial:
+            return y  # "trivial" no-op  flag for quick testing
+        z = self.encoder(
+            y
+        )  # transpose is just so embeddings dim goes last for matrix mult
+        # return xin + x if (self.resid and self.in_dims == self.out_dims) else x
+        return z + y if (self.resid and self.in_dims*2 == self.latent_dims) else z
+
+    def decode(self, z):
+        if self.trivial:
+            return z
+        y = self.decoder(z)  # .transpose(1,2)).transpose(1,2)
+        return y + z if (self.resid and self.in_dims*2 == self.latent_dims) else y
+
+    def forward(
+        self,
+        y,  # the 'encodings' vector from the given encoder
+        window_start=0.5, # where to start the window: 0 is fully in the first half, 1 is fully in the second half
+    ):
+        # breakpoint()
+        y = y.to(dtype=torch.float)
+        z = self.encode(y)
+
+        // if we are fully covering the second frame, then the starting index will be the mid-point
+        window_size = self.latent_dims//2
+
+        # starting index, the actual window may be between this and
+        # the next index
+        idx = math.floor(window_size * window_start)
+        window = y[..., idx:idx+window_size]
+
+        if window_start < 1.0: # interpolate between frames
+            window_next = y[..., idx+1:idx+1+window_size]
+            proportion = window_size*window_start - idx
+            window = window * (1-proportion) + window_next*proportion
+
+        y_hat = self.decode(
+            z
+        )  # train projector to approximately invert itself (and hope it doesn't all collapse to nothing!)
+        return z, y_hat  # encoder output,  decoder output
 
 class Projector(nn.Module):
     """
@@ -375,3 +462,12 @@ class Music2Latent(nn.Module):
 
     def forward(self, audio):
         return self.encode(audio)
+
+
+if __name__ == "__main__":
+    # perform some tests
+    window = SlidingWindow()
+
+    y = torch.randn(10,128)
+    z, y_hat = window(y, window_start = 0.33)
+    print('done!')
