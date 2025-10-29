@@ -1,10 +1,8 @@
 import argparse
 
-import librosa
 import torch
-import torchaudio
 
-from torch.utils.data import DataLoader, ChainDataset
+import os
 
 import random
 
@@ -17,32 +15,35 @@ from oplas.losses import get_loss_fn
 from oplas.mixing import mix_and_encode, mix_single
 from oplas.models import Music2Latent, Projector
 
+from ffcv.loader import Loader, OrderOption
+from ffcv.fields.decoders import NDArrayDecoder, FloatDecoder
+from ffcv.transforms import ToTensor, ToDevice
+
 from helper import get_projector
 
 from statistics import fmean
 
-import matplotlib.pyplot as plt
-
 @torch.no_grad()
-def test(projector, device, dl, encoder, step=None):
+def test(projector, device, dl, encoder, num_voices=2, step=None):
     """Validation function, slightly simplified for clarity."""
     projector.eval()  # Set model to evaluation mode
 
     losses = []
 
-    NUM_SAMPLES = 100
-    dl_iter = iter(dl)
-
     # tbatch = tqdm(dl, desc="valid", smoothing=0, leave=False)
-    for _ in tqdm(range(NUM_SAMPLES)):
-        stems = next(dl_iter)
+    tqstem = tqdm(dl)
+    for idx, (stems,) in enumerate(tqstem):
+        # if idx > 100:
+        #     break
+
         # Mix and encode
-        stems = stems.to(device)
+        
         mixes = mix_single(stems.unsqueeze(0), encoder, static_mix=False)
 
         # Call the new centralized loss function
         recon_loss = calculate_losses(projector, mixes["ys"], mixes["y_mix"], step)
         losses.append(recon_loss.detach())
+        tqstem.set_postfix(loss=fmean(losses))
 
     loss_avg = fmean(losses)
     return loss_avg
@@ -89,37 +90,49 @@ def main():
         "--nvoices",
         type=int,
         default=16,
-        help="up to how many voices to combine",
+        help="how many voices to combine",
     )
 
     parser.add_argument(
         "-k",
-        "--keys",
-        nargs="+",
+        "--key",
         required=True,
         type=str,
-        help="artifact model artifact keys ",
+        help="artifact model artifact keys",
     )
 
     parser.add_argument(
         "-v",
-        "--versions",
-        nargs="+",
+        "--version",
         type=str,
-        help="artifact model versions (i.e. v121 or latest) ",
+        help="artifact model version (i.e. v121 or latest)",
     )
 
     args = parser.parse_args()
 
-    if args.versions is not None and  len(args.keys) != len(args.versions):
-        print("KEYS MUST BE SAME LENGTH AS VERSIONS")
-        return
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = MTGJamendoStreamSingle(
-        data_dir="/scratch/users/nshaheed/mtg-jamendo-wav",
-        load_frac=0.2,
+    # dataset = MTGJamendoStreamSingle(
+    #     data_dir="/scratch/users/nshaheed/mtg-jamendo-wav",
+    #     load_frac=0.2,
+    # )
+
+    BATCH_SIZE = args.nvoices
+    NUM_WORKERS = 4
+    ORDERING = OrderOption.QUASI_RANDOM
+
+    PIPELINES = {
+        "audio": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
+    }
+
+    test_dl = Loader(
+        "/scratch/users/nshaheed/mtg-jamendo-ffcv-test.beton",
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        order=ORDERING,
+        pipelines=PIPELINES,
+        os_cache=False,  # can't cache bc it's too big to fit in memory
+        drop_last=True,
     )
 
     losses = {}
@@ -127,49 +140,69 @@ def main():
     encoder = Music2Latent().to(device)
     encoder.eval()  # Encoder is always frozen
 
-    # run for n iterations (regarless of number of voices) 
-    # just load enough for doing nvoices * niters (and cutoff before that)
-    for (key, version) in tqdm(zip(args.keys, args.versions)):
-        for n_voices in tqdm(range(args.nvoices)):
-            projector = get_projector(artifact_key=key, version=version, device=device)
-            projector = projector.to(device)
+    projector = get_projector(artifact_key=args.key, version=args.version, device=device)
+    projector = projector.to(device)
 
+    recon_loss = test(projector, device, test_dl, encoder)
+
+    # record model's results in a csv file
+    file_path = f"multivoice_benchmarks/{args.key}_{args.version}.csv"
+
+    # Check if the file exists and is not empty
+    file_exists = os.path.exists(file_path)
+    is_empty = not file_exists or os.path.getsize(file_path) == 0
+
+    with open(file_path, "a") as file:
+        if is_empty:
+            file.write("num_voices,reconstruction_loss\n")
+        file.write(f"{args.nvoices},{recon_loss}\n")
+
+
+
+    
+
+    # # run for n iterations (regarless of number of voices) 
+    # # just load enough for doing nvoices * niters (and cutoff before that)
+    # for (key, version) in tqdm(zip(args.keys, args.versions)):
+    #     for n_voices in tqdm(range(args.nvoices)):
+    #         projector = get_projector(artifact_key=key, version=version, device=device)
+    #         projector = projector.to(device)
             
-            test_dl = DataLoader(
-                dataset,
-                batch_size=n_voices+1,
-                num_workers=0,
-                pin_memory=True,
-                drop_last=True,
-                shuffle=True,
-            )
+    #         test_dl = DataLoader(
+    #             dataset,
+    #             batch_size=n_voices+1,
+    #             num_workers=0,
+    #             pin_memory=True,
+    #             drop_last=True,
+    #             shuffle=True,
+    #         )
 
-            recon_loss = test(projector, device, test_dl, encoder)
+    #         recon_loss = test(projector, device, test_dl, encoder)
             
-            dict_key = f"{key}_{version}"
+    #         dict_key = f"{key}_{version}"
             
-            if dict_key in losses:
-                losses[dict_key].append(recon_loss)
-            else:
-                losses[dict_key] = [recon_loss]
+    #         if dict_key in losses:
+    #             losses[dict_key].append(recon_loss)
+    #         else:
+    #             losses[dict_key] = [recon_loss]
 
 
-    # Create a new figure
-    plt.figure(figsize=(8, 6))
+    # # Create a new figure
+    # plt.figure(figsize=(8, 6))
 
-    # Plot each list in the dictionary
-    for key, values in losses.items():
-        plt.plot(range(len(values)), values, marker='o', label=key)
+    # # Plot each list in the dictionary
+    # for key, values in losses.items():
+    #     plt.plot(range(len(values)), values, marker='o', label=key)
 
-    # Add labels and title
-    plt.xlabel("Num Voices")
-    plt.ylabel("Reconstruction Loss")
-    plt.title("Recon loss for number of voices")
-    plt.legend()
-    plt.grid(True)
+    # # Add labels and title
+    # plt.xlabel("Num Voices")
+    # plt.ylabel("Reconstruction Loss")
+    # plt.title("Recon loss for number of voices")
+    # plt.legend()
+    # plt.grid(True)
 
-    # Save the plot as a PNG file
-    plt.savefig("multivoice_benchmark.png", dpi=300, bbox_inches='tight')
+    # # Save the plot as a PNG file
+    # plt.savefig("multivoice_benchmark.png", dpi=300, bbox_inches='tight')
 
 
 if __name__ == "__main__":

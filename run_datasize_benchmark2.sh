@@ -1,9 +1,9 @@
 #!/usr/bin/bash
-#SBATCH --array=0-5
+#SBATCH --array=0-7
 #SBATCH --job-name=multivoice
 #SBATCH --output=multivoice.%A_%a.out
 #SBATCH --error=multivoice.%A_%a.err
-#SBATCH --time=16:00:00
+#SBATCH --time=1:00:00
 #SBATCH -p hns,gpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-gpu=4
@@ -19,19 +19,11 @@ ml load ffmpeg
 ml load opencv/4.10.0 libjpeg-turbo
 
 
-#       64 voices  32 voices  16 voices  8 voices   4 vocies   2 voices
-keys=( "xz9pve6h" "b468xbve" "1rdq7g5q" "lfyo1g82" "ikcu74vb" "f09v4lk4")
-
-# 1/256    1/128
-"s52zbb9h" "0t0ifbvt"
+#      1/256      1/128      1/64       1/32       1/16       1/8        1/4        1/2
+keys=("s52zbb9h" "0t0ifbvt" "d8gkgiu9" "rrx9gt7v" "otjkc28v" "ek6cahrw" "t2ib5c80" "qahnouow")
 
 key=${keys[$SLURM_ARRAY_TASK_ID]}
 
 echo "Running task ${SLURM_ARRAY_TASK_ID} with key=${key}"
 
-# uv run multivoice_benchmark.py -k ${key} -v latest -n ${SLURM_ARRAY_TASK_ID}
-
-for ((n=1; n>0; n--)); do
-    echo "Starting run with n=$n"
-    uv run multivoice_benchmark.py -k "$key" -v latest -n "$n"
-done
+uv run multivoice_benchmark.py -k "$key" -v latest -n 128

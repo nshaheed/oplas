@@ -171,6 +171,7 @@ def validate(projector, device, val_dl, encoder, config, step=None):
     tbatch = tqdm(val_dl, desc="valid", smoothing=0, leave=False)
     for stems, mix in tbatch:
         # Call the new centralized loss function
+        stems = stems[:,:config.num_stems,:,:]
         loss_start = time.time()
         loss_dict, z_sum = calculate_losses(projector, stems, mix, config, step)
         loss_end = time.time() - loss_start
@@ -216,6 +217,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     """Main training function wrapped for W&B sweeps."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
+
+    print(f"Num stems: {config.num_stems}")
 
     # handle old models where this wasn't a variable
     out_dims = config.projector_dims if "projector_dims" in config else 64
@@ -306,11 +309,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     # if step >= config.max_steps and not ignore_max_steps:
     #     break
     # training loop
-    for stems, mix in tqdm(train_dl):
+    for stems, mix in tqdm(train_dl, total=num_steps / 2):
         # for batch in range(0):
-        if step > num_steps:
+        if step > (num_steps / 2):
             break
 
+        stems = stems[:,:config.num_stems,:,:]
         opt.zero_grad()
 
         processing_start = time.time()
@@ -346,8 +350,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
         if scheduler:
             scheduler.step()
 
-        val_log = validate(projector, device, val_dl, encoder, config, step=step)
-        log_dict.update(val_log)
+        # val_log = validate(projector, device, val_dl, encoder, config, step=step)
+        # log_dict.update(val_log)
         run.log(log_dict)
 
         step += 1

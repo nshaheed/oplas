@@ -103,6 +103,7 @@ class BetonInMemory:
 
         stems = batch[0][0].numpy().astype('float32')
         mix = batch[1][0].numpy().astype('float32')
+        # print(f'{stems.shape=}, {mix.shape=}')
         return(stems, mix)
         # return (self.stems[idx], self.mixes[idx])
 
@@ -240,6 +241,9 @@ def main():
             dtype=np.dtype("float32")
         ),
     }
+
+    print(f'expected size, stems: {(args.num_stems, args.latent_size, args.latent_len)}')
+    print(f'expected size: mix:   {(args.latent_size, args.latent_len)}')
 
 
     # test next iter etc

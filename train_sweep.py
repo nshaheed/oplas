@@ -17,6 +17,7 @@ import torch.multiprocessing as mp
 from ffcv.loader import Loader, OrderOption
 from ffcv.fields.decoders import NDArrayDecoder, FloatDecoder
 from ffcv.transforms import ToTensor, ToDevice
+from ffcv.reader import Reader
 
 import wandb
 
@@ -304,6 +305,23 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             print(f"Resumed successfully from step {start_step}.")
         except Exception as e:
             print(f"Could not resume. Starting from scratch. Error: {e}")
+    elif config.run_from:
+        print(f"Beginning run from {config.run_from}")
+
+        try:
+            artifact = run.use_artifact(f"model-ckpt-{config.run_from}:latest")
+            artifact_dir = artifact.download()
+            checkpoint_path = Path(artifact_dir) / "model.pt"
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+
+            projector.load_state_dict(checkpoint["model_state_dict"])
+            opt.load_state_dict(checkpoint["optimizer_state_dict"])
+            if checkpoint["scheduler"]:
+                scheduler.load_state_dict(checkpoint["scheduler"])
+            start_step = checkpoint["step"] + 1
+            print(f"Resumed successfully from step {start_step}.")
+        except Exception as e:
+            print(f"Could not resume. Starting from scratch. Error: {e}")
 
     # --- Data Loading ---
     # train_dataset = StemChunk(data_dir=config.data_dir, load_frac=config.load_frac)
@@ -358,21 +376,36 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             "mix": [NDArrayDecoder(), ToTensor(), ToDevice(device)],
         }
 
+        train_file = f"/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-train-{config.num_stems}.beton"
+        indices = None
+        if config.load_frac < 1.0:
+            reader = Reader(train_file) # read the train file to get it's length
+            indices = np.arange(int(config.load_frac * reader.num_samples))
+
         train_dl = Loader(
-            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-100.beton",
+            train_file,
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             order=ORDERING,
             pipelines=PIPELINES,
+            indices=indices,
             os_cache=False,  # can't cache bc it's too big to fit in memory
             drop_last=True,
         )
+
+        val_file = f"/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-val-{config.num_stems}.beton"
+        val_load_frac = config.val_load_frac if "val_load_frac" in config else 1.0
+        if val_load_frac < 1.0:
+            reader = Reader(val_file) # read the train file to get it's length
+            indices = np.arange(int(config.val_load_frac * reader.num_samples))
+
         val_dl = Loader(
-            "/scratch/users/nshaheed/mtg-jamendo-ffcv-latents-val-50.beton",
+            val_file,
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             order=ORDERING,
             pipelines=PIPELINES,
+            indices=indices,
             os_cache=False,  # can't cache bc it's too big to fit in memory
             drop_last=True,
         )
@@ -421,6 +454,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
     # )
     max_epochs = config.max_epochs
     epochs = tqdm(range(max_epochs), desc="epoch", smoothing=0)
+    step_test = 0
+    step = 0
     for i in epochs:
         tbatch = tqdm(train_dl, desc="steps", smoothing=0, leave=False)
         dataload_start = time.time()
@@ -435,8 +470,8 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
             dataload_end = time.time() - dataload_start
             # step = tbatch.n
             # step += 1
-            step = epochs.n * len(train_dl) + tbatch.n
-
+            # step = epochs.n * len(train_dl) + tbatch.n
+            
             opt.zero_grad()
 
             # # resize batch so that it has shape [batch, num_stems, latent, time]
@@ -473,7 +508,7 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
 
 
             opt.step()
-            if scheduler:
+            if scheduler and config.scheduler != "reduce_on_plateau":
                 scheduler.step()
 
             if step % 1000 == 0:
@@ -513,7 +548,6 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 d=dataload_end, p=processing_end, l=logging_end
             )
             tbatch.set_postfix(loss=loss.item(), sum=loss_dict["sum_loss"].item())
-            step += 1
             tbatch.update(1)
 
             if step % config.checkpoint_every == 0 and step != 0:
@@ -544,7 +578,12 @@ def train(run, config, checkpoint=None, ignore_max_steps=False, test=False):
                 artifact.add_file(local_path=checkpoint_path, name="model.pt")
                 run.log_artifact(artifact)
 
+                # ReduceLROnPlateau can use validation loss for this
+                if config.scheduler == 'reduce_on_plateau':
+                    scheduler.step(val_log['val/loss'])
+
             run.log(log_dict)
+            step += 1
 
 
 
@@ -569,6 +608,12 @@ def main():
         type=str,
         default=None,
         help="Path to model checkpoint when resuming.",
+    )
+    parser.add_argument(
+        "--run_from",
+        type=str,
+        default=None,
+        help="W&B run ID to begin training a new model with.",
     )
 
     parser.add_argument("--learning_rate", type=float, default=3e-3)
@@ -597,6 +642,7 @@ def main():
     parser.add_argument("--max_steps", type=int, default=10000)
     parser.add_argument("--max_epochs", type=int, default=10)
     parser.add_argument("--load_frac", type=float, default=1.0)
+    parser.add_argument("--val_load_frac", type=float, default=1.0)
     parser.add_argument("--checkpoint_every", type=int, default=400)
     parser.add_argument("--val_every", type=int, default=200)
     parser.add_argument(
@@ -645,6 +691,13 @@ def main():
                 checkpoint=args.checkpoint,
                 ignore_max_steps=args.ignore_max_steps,
                 test=args.test,
+            )
+
+    elif args.run_from: # new run using existing model as starting point
+        config = vars(args)
+        with wandb.init(config=config) as run:
+            train(
+                run, run.config, ignore_max_steps=args.ignore_max_steps, test=args.test
             )
 
     # --- Mode 3: Single run ---
