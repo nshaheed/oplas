@@ -44,4 +44,8 @@ def get_scheduler(opt, config, dl):
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             opt, max_lr=config.max_lr, epochs=config.max_epochs, steps_per_epoch=len(dl),
         )
+    if config.scheduler == "reduce_on_plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, 'min', patience=3,
+        )
     return scheduler
