@@ -121,7 +121,7 @@ class SlidingWindow(nn.Module):
         y = y.to(dtype=torch.float)
         z = self.encode(y)
 
-        // if we are fully covering the second frame, then the starting index will be the mid-point
+        # if we are fully covering the second frame, then the starting index will be the mid-point
         window_size = self.latent_dims//2
 
         # starting index, the actual window may be between this and
